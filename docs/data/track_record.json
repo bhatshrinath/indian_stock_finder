@@ -1,4 +1,26 @@
 {
  "trades": [],
- "portfolio_snapshots": []
+ "portfolio_snapshots": [
+  {
+   "date": "2026-11-05",
+   "index": 24536.6,
+   "holdings": {
+    "LAURUSLABS": 2345.0,
+    "DIVISLAB": 10140.5,
+    "APARINDS": 15613.0,
+    "BHEL": 418.1,
+    "AUROPHARMA": 1785.0,
+    "PAYTM": 1781.6,
+    "RADICO": 4525.0,
+    "MOTHERSON": 168.0,
+    "MCX": 3366.0,
+    "NYKAA": 350.3,
+    "SOLARINDS": 18520.0,
+    "TORNTPHARM": 4710.0,
+    "FEDERALBNK": 338.5,
+    "COFORGE": 2079.0,
+    "BOSCHLTD": 52475.0
+   }
+  }
+ ]
 }
