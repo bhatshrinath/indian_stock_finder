@@ -123,3 +123,84 @@ def test_incomplete_last_day_is_dropped():
     assert len(out.close) == 299
     assert out.close.iloc[-1].notna().all()
     assert len(out.index_close) == 299
+
+
+# ----------------------------------------------------------------- safe mode
+def _open_trade(f, sym, i, strategy="dip_buy"):
+    price = float(f.close[sym].iloc[i])
+    return {"id": "t1", "symbol": sym, "name": sym, "strategy": strategy, "signal_date": str(f.close.index[i - 1].date()),
+            "signal_close": price, "max_entry": price * 2, "stop": price * 0.01, "initial_stop": price * 0.01,
+            "target": None, "risk": price * 0.99, "status": "open", "entry": price,
+            "entry_date": str(f.close.index[i].date()), "exit": None, "exit_date": None, "ret_pct": None,
+            "days": 1, "hi_close": price, "atr": None}
+
+
+def test_exit_signal_sells_at_next_open(tmp_path, monkeypatch):
+    monkeypatch.setattr(tracker, "FILE", tmp_path / "tr.json")
+    f = Features(random_walk_prices(seed=11, days=400))
+    sym = SYMS[1]
+    tr = {"trades": [_open_trade(f, sym, 300)]}
+    ev = tracker.update_eod(tr, f)
+    t = tr["trades"][0]
+    assert t["status"] == "selling" and ev[-1]["type"] == "sell_signal"
+    sig_day = pd.Timestamp(t["sell_signal_date"])
+    nxt = f.close.index[f.close.index > sig_day][0]
+    tracker.update_eod(tr, f)                                  # next evening's run
+    assert t["status"] in ("exit_rule", "time")
+    assert t["exit_date"] == str(nxt.date())
+    assert t["exit"] == pytest.approx(float(f.open[sym].loc[nxt]), abs=0.01)
+
+
+def test_safe_gate_rules():
+    from engine.run import safe_gate
+    good = {"trades": 300, "win_rate": 66, "profit_factor": 1.4, "avg_return": 0.5,
+            "last_12m": {"trades": 40, "avg_return": 0.3}}
+    assert safe_gate(good)[0]
+    assert not safe_gate({**good, "trades": 10})[0]
+    assert not safe_gate({**good, "win_rate": 55})[0]
+    assert not safe_gate({**good, "profit_factor": 1.05})[0]
+    assert not safe_gate({**good, "last_12m": {"trades": 20, "avg_return": -0.2}})[0]   # recently broken
+    assert safe_gate({**good, "last_12m": {"trades": 3, "avg_return": -2}})[0]         # too few to judge
+
+
+def test_plan_and_message():
+    from engine.run import build_plan, plan_message
+    tr = {"trades": [
+        {"symbol": "ITC", "name": "ITC Ltd.", "strategy": "safe_dip", "status": "pending", "signal_date": "2026-11-06",
+         "signal_close": 430.0, "max_entry": 438.6, "stop": 410.0, "risk": 20.0},
+        {"symbol": "TCS", "name": "TCS", "strategy": "safe_dip", "status": "open", "entry": 3000.0,
+         "entry_date": "2026-11-04", "stop": 2900.0, "last_price": 3050.0, "days": 3},
+        {"symbol": "INFY", "name": "Infosys", "strategy": "safe_dip", "status": "selling", "entry": 1500.0,
+         "entry_date": "2026-11-02", "last_price": 1540.0, "sell_reason": "exit_rule"},
+        {"symbol": "OLD", "name": "Old", "strategy": "safe_dip", "status": "exit_rule", "exit_date": "2026-10-01"},
+    ]}
+    plan = build_plan(tr, "2026-11-06", {"safe_dip": {"win_rate": 66, "trades": 300}})
+    assert [b["symbol"] for b in plan["buy"]] == ["ITC"]
+    assert [h["symbol"] for h in plan["hold"]] == ["TCS"]
+    assert [s["symbol"] for s in plan["sell"]] == ["INFY"]
+    assert plan["buy"][0]["alert_qty"] == int(config.TRADE_AMOUNT // 438.6)
+    msg = plan_message(plan, "tomorrow")
+    assert "SELL tomorrow" in msg and "INFY" in msg and "BUY tomorrow" in msg and "HOLD" in msg
+    assert plan_message({"buy": [], "sell": [], "hold": []}, "today") == ""
+
+
+def test_live_day_one_protection():
+    t = {"symbol": "ITC", "strategy": "safe_dip", "status": "pending", "signal_date": "2026-11-06",
+         "signal_close": 430.0, "max_entry": 438.6, "stop": 410.0, "initial_stop": 410.0}
+    tr = {"trades": [dict(t)]}
+    ev = tracker.update_live(tr, {"ITC": {"price": 415, "open": 432, "day_low": 411, "day_high": 433, "date": "2026-11-09"}})
+    assert [e["type"] for e in ev] == ["live_stop"]               # 432 - 20 = 412 safety price was touched
+    tr = {"trades": [dict(t)]}
+    ev = tracker.update_live(tr, {"ITC": {"price": 445, "open": 445, "day_low": 440, "day_high": 450, "date": "2026-11-09"}})
+    assert [e["type"] for e in ev] == ["live_skip"]               # opened above the buy limit
+    tr = {"trades": [dict(t)]}
+    ev = tracker.update_live(tr, {"ITC": {"price": 431, "open": 431, "day_low": 429, "day_high": 433, "date": "2026-11-06"}})
+    assert ev == []                                               # signal day itself: nothing yet
+
+
+def test_safe_dip_only_blue_chips():
+    f = Features(random_walk_prices(seed=12))
+    f.set_large(SYMS[:10])
+    st = next(s for s in SWING_STRATEGIES if s.key == "safe_dip")
+    sig = st.signal_fn(f)[0]
+    assert not sig[SYMS[10:]].to_numpy().any()

@@ -208,6 +208,7 @@ def live_quotes(symbols: list[str]) -> dict[str, dict]:
                 key = "NIFTY" if t == config.INDEX_SYMBOL else t.replace(".NS", "")
                 out[key] = {
                     "price": round(float(c.iloc[-1]), 2),
+                    "open": round(float(h["Open"].dropna().iloc[-1]), 2) if "Open" in h else None,
                     "prev_close": round(float(c.iloc[-2]), 2) if len(c) > 1 else None,
                     "day_high": round(float(hi.iloc[-1]), 2),
                     "day_low": round(float(lo.iloc[-1]), 2),

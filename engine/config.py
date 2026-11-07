@@ -46,6 +46,24 @@ LT_MIN_HISTORY = 260                       # trading days needed to score a stoc
 MIN_PRICE = 50                             # avoid very low-priced stocks
 MIN_TURNOVER_CR = 10                       # min avg daily turnover (₹ crore, 20d)
 
+# ---------------------------------------------------------------- SAFE MODE (very low risk)
+# Only the 50 largest companies, only the most reliable setup, only when its own
+# 5-year backtest clears a high bar, and at most a couple of trades at a time.
+SAFE_MODE = os.getenv("SAFE_MODE", "on").strip().lower() != "off"
+NIFTY50_URLS = [
+    "https://nsearchives.nseindia.com/content/indices/ind_nifty50list.csv",
+    "https://niftyindices.com/IndexConstituent/ind_nifty50list.csv",
+]
+NIFTY50_FALLBACK = ENGINE_DIR / "nifty50_fallback.csv"
+SAFE_STRATEGIES = ("safe_dip",)
+SAFE_MIN_WIN_RATE = 60.0          # % of past trades that made money (after costs)
+SAFE_MIN_PROFIT_FACTOR = 1.2      # total gains / total losses in the backtest
+SAFE_MIN_TRADES = 40              # enough history to trust the numbers
+MAX_OPEN_TRADES = int(os.getenv("MAX_OPEN_TRADES", "2"))
+MAX_NEW_PER_DAY = 1
+# rupees per trade used in phone alerts (the app uses the amount set on the phone)
+TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", "10000") or 10000)
+
 # ---------------------------------------------------------------- alerts/AI (optional)
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")

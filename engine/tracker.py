@@ -2,7 +2,9 @@
 real outcome tracked. Over time this is the most honest measure of the system
 (no backtest assumptions, no hindsight).
 
-Statuses: pending -> open -> (target | stop | exit_rule | time) or expired.
+Statuses: pending -> open -> (target | stop) or open -> selling -> (exit_rule | time),
+or pending -> expired. "selling" means: the exit signal came at the close, so the
+user sells at the next market open, and that open price is the recorded exit.
 """
 from __future__ import annotations
 
@@ -64,7 +66,7 @@ def update_eod(tr: dict, f: Features) -> list[dict]:
     events = []
     dates = f.close.index
     for t in tr["trades"]:
-        if t["status"] not in ("pending", "open") or t["symbol"] not in f.close.columns:
+        if t["status"] not in ("pending", "open", "selling") or t["symbol"] not in f.close.columns:
             continue
         strat = STRATS.get(t["strategy"])
         if strat is None:
@@ -75,6 +77,16 @@ def update_eod(tr: dict, f: Features) -> list[dict]:
         sig_ts = pd.Timestamp(t["signal_date"])
         after = dates[dates > sig_ts]
         for d in after:
+            if t["status"] == "selling":
+                # sold at the first open after the sell signal
+                if d.date().isoformat() <= t["sell_signal_date"]:
+                    continue
+                op = float(o.get(d, np.nan))
+                if not np.isfinite(op):
+                    continue
+                _close(t, op, str(d.date()), t.get("sell_reason", "exit_rule"))
+                events.append({"type": "sold", "trade": t})
+                break
             if t["status"] == "pending":
                 if t.get("entry_date"):
                     break
@@ -110,10 +122,16 @@ def update_eod(tr: dict, f: Features) -> list[dict]:
             elif t.get("target") and hi >= t["target"]:
                 exit_px, reason = (t["target"] if first or op < t["target"] else op), "target"
             elif strat.exit_above_sma5 and cl > float(sma5.get(d, np.inf)):
-                exit_px, reason = cl, "exit_rule"
+                reason = "exit_rule"
             elif t["days"] >= strat.max_hold:
-                exit_px, reason = cl, "time"
+                reason = "time"
             t["last_processed"] = d.date().isoformat()
+            t["last_price"] = round(cl, 2)
+            if reason in ("exit_rule", "time"):
+                # signal at the close -> sell at the next open
+                t.update(status="selling", sell_signal_date=d.date().isoformat(), sell_reason=reason)
+                events.append({"type": "sell_signal", "trade": t})
+                break
             if exit_px is not None:
                 _close(t, exit_px, str(d.date()), reason)
                 events.append({"type": reason, "trade": t})
@@ -133,9 +151,24 @@ def update_live(tr: dict, quotes: dict[str, dict]) -> list[dict]:
     """Intraday: warn when an open trade touches its stop or target (final booking happens EOD)."""
     events = []
     for t in tr["trades"]:
-        if t["status"] != "open" or t["symbol"] not in quotes:
+        if t["symbol"] not in quotes:
             continue
         q = quotes[t["symbol"]]
+        if t["status"] == "pending" and q.get("open") and q["date"] > t["signal_date"]:
+            # buy day: the trade starts at today's open, so protect it from the first minute
+            flags = t.setdefault("live_flags", {})
+            if q["open"] > t["max_entry"] or q["open"] <= t["stop"]:
+                if flags.get("skip") != q["date"]:
+                    flags["skip"] = q["date"]
+                    events.append({"type": "live_skip", "trade": t, "price": q["open"]})
+                continue
+            day_stop = round(q["open"] - (t["signal_close"] - t["initial_stop"]), 2)
+            if q["day_low"] <= day_stop and flags.get("stop") != q["date"]:
+                flags["stop"] = q["date"]
+                events.append({"type": "live_stop", "trade": {**t, "stop": day_stop}, "price": q["price"]})
+            continue
+        if t["status"] != "open":
+            continue
         t["last_price"] = q["price"]
         flags = t.setdefault("live_flags", {})
         today = q["date"]
@@ -155,7 +188,7 @@ def _close(t: dict, px: float, d: str, reason: str) -> None:
 
 def summary(tr: dict) -> dict:
     closed = [t for t in tr["trades"] if t["status"] in ("target", "stop", "exit_rule", "time")]
-    open_ = [t for t in tr["trades"] if t["status"] == "open"]
+    open_ = [t for t in tr["trades"] if t["status"] in ("open", "selling")]
     out = {"closed": len(closed), "open": len(open_),
            "pending": sum(t["status"] == "pending" for t in tr["trades"]),
            "since": min((t["signal_date"] for t in tr["trades"]), default=None)}

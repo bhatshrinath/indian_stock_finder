@@ -76,8 +76,12 @@ def simulate_trade(f: Features, strat: SwingStrategy, col: int, s: int, stop_px:
     if exit_px is None:
         if last >= n - 1 and last - e + 1 < strat.max_hold:
             return {"open": True}                # still running at the end of data
-        exit_i = last
-        exit_px, reason = C[last, col], "time"
+        # time limit reached: the user is told after the close and sells at the next open
+        if last + 1 < n and np.isfinite(O[last + 1, col]):
+            exit_i, exit_px = last + 1, O[last + 1, col]
+        else:
+            exit_i, exit_px = last, C[last, col]
+        reason = "time"
     ret = exit_px / entry - 1 - config.ROUND_TRIP_COST
     return {"entry_i": e, "exit_i": exit_i, "entry": entry, "exit": exit_px,
             "ret": ret, "r": (exit_px - entry) / risk, "reason": reason,

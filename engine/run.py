@@ -20,7 +20,7 @@ import pandas as pd
 
 from . import ai_notes, backtest, config, data, fundamentals, news, notify, tracker
 from .strategies import SWING_STRATEGIES, Features, momentum_scores, pick_portfolio
-from .universe import load_universe
+from .universe import load_nifty50, load_universe
 
 log = logging.getLogger("engine")
 
@@ -225,12 +225,96 @@ def next_rebalance(today: pd.Timestamp) -> str:
     return str(nxt.date())
 
 
+# ======================================================================= safe mode
+def safe_gate(stats: dict) -> tuple[bool, str]:
+    """Is a method reliable enough to recommend to a very cautious investor?"""
+    if not stats or not stats.get("trades"):
+        return False, "Not tested yet"
+    if stats["trades"] < config.SAFE_MIN_TRADES:
+        return False, f"Only {stats['trades']} past trades: not enough evidence yet"
+    if (stats.get("win_rate") or 0) < config.SAFE_MIN_WIN_RATE:
+        return False, (f"Made money in {stats.get('win_rate')}% of past trades, below the "
+                       f"{config.SAFE_MIN_WIN_RATE:.0f}% safety bar")
+    if (stats.get("profit_factor") or 0) < config.SAFE_MIN_PROFIT_FACTOR or (stats.get("avg_return") or 0) <= 0:
+        return False, "Past gains did not outweigh past losses by a safe margin"
+    l12 = stats.get("last_12m") or {}
+    if l12.get("trades", 0) >= 10 and (l12.get("avg_return") or 0) < 0:
+        return False, "It lost money over the last 12 months, so it is paused until it recovers"
+    return True, "Reliable over the past 5 years and still working recently"
+
+
+def shares_for(amount: float, price: float | None) -> int:
+    return int(amount // price) if price and price > 0 else 0
+
+
+def build_plan(tr: dict, last_date: str, bt: dict) -> dict:
+    """What the investor should do at the next market open: SELL, BUY, HOLD."""
+    plan = {"buy": [], "sell": [], "hold": []}
+    for t in tr["trades"]:
+        st = t["status"]
+        strat = tracker.STRATS.get(t["strategy"])
+        stats = bt.get(t["strategy"], {})
+        base = {"symbol": t["symbol"], "name": t.get("name") or t["symbol"], "strategy": t["strategy"],
+                "max_hold_days": strat.max_hold if strat else None}
+        if st == "pending":
+            plan["buy"].append({
+                **base, "signal_date": t["signal_date"], "price": t["signal_close"], "max_entry": t["max_entry"],
+                "stop": t["stop"], "risk_per_share": t["risk"],
+                "risk_pct": r2(t["risk"] / t["signal_close"] * 100) if t["signal_close"] else None,
+                "hist_win_rate": stats.get("win_rate"), "hist_avg_return": stats.get("avg_return"),
+                "hist_avg_win": stats.get("avg_win"), "hist_avg_loss": stats.get("avg_loss"),
+                "hist_avg_days": stats.get("avg_days"), "hist_trades": stats.get("trades"),
+                "alert_qty": shares_for(config.TRADE_AMOUNT, t["max_entry"])})
+        elif st == "selling":
+            last = t.get("last_price")
+            plan["sell"].append({
+                **base, "reason": t.get("sell_reason", "exit_rule"), "entry": t.get("entry"),
+                "entry_date": t.get("entry_date"), "last_price": last,
+                "ret_pct": r2((last / t["entry"] - 1 - config.ROUND_TRIP_COST) * 100) if last and t.get("entry") else None})
+        elif st == "open":
+            plan["hold"].append({
+                **base, "entry": t.get("entry"), "entry_date": t.get("entry_date"), "stop": t["stop"],
+                "last_price": t.get("last_price"), "days": t.get("days")})
+        elif st in ("stop", "target") and t.get("exit_date") == last_date:
+            # exit level was reached during the day: anyone still holding should sell at the open
+            plan["sell"].append({**base, "reason": st, "entry": t.get("entry"), "last_price": t.get("exit"),
+                                 "ret_pct": t.get("ret_pct")})
+    return plan
+
+
+def plan_message(plan: dict, when: str) -> str:
+    """Plain-language plan used for phone alerts."""
+    L = []
+    if plan["sell"]:
+        L.append(f"💰 SELL {when} at 9:15 AM:")
+        for s in plan["sell"]:
+            ret = f" (about {s['ret_pct']:+.1f}%)" if s.get("ret_pct") is not None else ""
+            why = {"stop": "It fell to the safety price. Small losses are part of the plan.",
+                   "target": "It reached the goal price.",
+                   "time": "The time limit is over."}.get(s["reason"], "The trade is complete.")
+            L.append(f"• All your {s['symbol']} shares{ret}. {why}")
+        L.append("")
+    if plan["buy"]:
+        L.append(f"🛒 BUY {when} at 9:15 AM:")
+        for b in plan["buy"]:
+            q = b["alert_qty"]
+            L.append(f"• {q} shares of {b['name']} ({b['symbol']}). Pay at most ₹{b['max_entry']:,.2f} a share "
+                     f"(about ₹{q * b['max_entry']:,.0f} in total). If the price is higher, don't buy.")
+            L.append(f"  Safety sell price about ₹{b['stop']:,.0f}: most you could lose is about "
+                     f"₹{q * b['risk_per_share']:,.0f}. We'll alert you if it gets there.")
+        L.append("")
+    if plan["hold"]:
+        L.append("✋ HOLD (nothing to do): " + ", ".join(h["symbol"] for h in plan["hold"]))
+    return "\n".join(L).strip()
+
+
 # ======================================================================= modes
 def run_full(args) -> None:
     t0 = time.time()
     uni = load_universe()
     p = data.load_prices(list(uni.symbol), demo=args.demo)
     f = Features(p)
+    f.set_large(load_nifty50())                       # blue chips for the safe method
     last_date = str(f.close.index[-1].date())
     mkt = market_summary(f, p)
     log.info("Data: %s, last date %s, regime %s", p.source, last_date, mkt["regime_label"])
@@ -295,15 +379,30 @@ def run_full(args) -> None:
     for pk in picks:
         score_swing(pk, mkt["regime"])
     picks.sort(key=lambda x: x["score"], reverse=True)
-    actionable = [pk for pk in picks if pk["confidence"] in ("High", "Medium")
-                  and not pk["red_flags"] and pk["strategy_enabled"] and mkt["regime"] >= 1]
-    actionable = actionable[: (6 if mkt["regime"] == 2 else 3)]
+
+    # ---- track record: advance existing trades first (frees slots, creates sell signals)
+    events = tracker.update_eod(tr, f)
+    active = [t for t in tr["trades"] if t["status"] in ("pending", "open", "selling")]
+
+    safe = {k: safe_gate(bt.get(k, {})) for k in config.SAFE_STRATEGIES}
+    if config.SAFE_MODE:
+        # very low risk: only reliable blue-chip setups, affordable with the trade amount,
+        # no bad news, never more than MAX_OPEN_TRADES at once, one new trade per day
+        held = {t["symbol"] for t in active}
+        cands = [pk for pk in picks if pk["strategy"] in safe and safe[pk["strategy"]][0]
+                 and mkt["regime"] >= 1 and not pk["red_flags"] and pk.get("news_sentiment", 0) > -0.3
+                 and not any("loss-making" in w for w in pk.get("warnings", []))
+                 and pk["max_entry"] <= config.TRADE_AMOUNT and pk["symbol"] not in held]
+        slots = max(0, config.MAX_OPEN_TRADES - len(active))
+        actionable = cands[: min(slots, config.MAX_NEW_PER_DAY)]
+    else:
+        actionable = [pk for pk in picks if pk["confidence"] in ("High", "Medium")
+                      and not pk["red_flags"] and pk["strategy_enabled"] and mkt["regime"] >= 1]
+        actionable = actionable[: (6 if mkt["regime"] == 2 else 3)]
     for pk in picks:
         pk["action"] = "BUY" if pk in actionable else "WATCH"
     mkt_news = news.market_news() if not args.no_news else []
 
-    # ---- track record
-    events = tracker.update_eod(tr, f)
     new_trades = tracker.add_signals(tr, actionable, last_date)
     if lt_picks:
         tracker.snapshot_portfolio(tr, last_date, lt_picks, float(f.ix.iloc[-1]))
@@ -320,8 +419,9 @@ def run_full(args) -> None:
     if notes.get("_market"):
         mkt["ai_summary"] = notes["_market"]
 
-    # ---- open positions view (from track record)
-    open_trades = [t for t in tr["trades"] if t["status"] in ("open", "pending")]
+    # ---- open positions view (from track record) and tomorrow's plan
+    open_trades = [t for t in tr["trades"] if t["status"] in ("open", "pending", "selling")]
+    plan = build_plan(tr, last_date, bt)
 
     latest = {
         "generated": datetime.now(timezone.utc).isoformat(),
@@ -332,11 +432,22 @@ def run_full(args) -> None:
                       "next_rebalance": next_rebalance(f.close.index[-1]),
                       "live_performance": perf, "size": config.LT_PORTFOLIO_SIZE},
         "open_trades": open_trades,
-        # trades whose exit was triggered by the latest close: tell holders to sell at the next open
-        "sell_today": [{"symbol": t["symbol"], "reason": t["status"], "price": t.get("exit"),
-                        "ret_pct": t.get("ret_pct")}
-                       for t in tr["trades"] if t.get("exit_date") == last_date
-                       and t["status"] in ("target", "stop", "exit_rule", "time")],
+        "plan": plan,
+        "safe": {
+            "enabled": config.SAFE_MODE, "trade_amount": config.TRADE_AMOUNT,
+            "max_open_trades": config.MAX_OPEN_TRADES, "universe": "Nifty 50",
+            "bar": {"min_win_rate": config.SAFE_MIN_WIN_RATE, "min_profit_factor": config.SAFE_MIN_PROFIT_FACTOR,
+                    "min_trades": config.SAFE_MIN_TRADES},
+            "methods": {k: {"ok": ok, "why": why, "name": bt.get(k, {}).get("name"),
+                            "stats": {s: bt.get(k, {}).get(s) for s in
+                                      ("trades", "win_rate", "avg_return", "avg_win", "avg_loss",
+                                       "profit_factor", "avg_days", "max_losing_streak")},
+                            "last_12m": bt.get(k, {}).get("last_12m")}
+                        for k, (ok, why) in safe.items()},
+        },
+        # stocks to sell at the next open (exit signal at the close, or exit level hit today)
+        "sell_today": [{"symbol": s["symbol"], "reason": s["reason"], "price": s.get("last_price"),
+                        "ret_pct": s.get("ret_pct")} for s in plan["sell"]],
         "track_summary": tracker.summary(tr),
         "strategies": [{"key": s.key, "name": s.name, "why": s.plain_english, "exit": s.how_to_exit,
                         "stats": {k: bt.get(s.key, {}).get(k) for k in
@@ -352,18 +463,26 @@ def run_full(args) -> None:
     write_json("live.json", {"updated": latest["generated"], "market_open": False, "quotes": {}})
 
     # ---- alerts
-    lines = [notify.format_event(e) for e in events]
-    if actionable:
-        lines.append(f"\n📈 {len(actionable)} new swing idea(s) for tomorrow ({mkt['regime_label']} market):")
-        for pk in actionable:
-            tgt = f"target ₹{pk['target']:,}" if pk.get("target") else f"exit above ₹{pk['exit_hint']:,}"
-            lines.append(f"• {pk['symbol']} ({pk['strategy_name']}) buy ≤ ₹{pk['max_entry']:,}, "
-                         f"stop ₹{pk['stop']:,}, {tgt} [{pk['confidence']}]")
-    if changes.get("added") and snaps:
-        lines.append(f"\n🧺 Long-term portfolio changes: add {', '.join(changes['added'])}; "
-                     f"remove {', '.join(changes['removed']) or 'none'}")
-    if lines and not args.demo:
-        notify.send(f"Stock Finder - {last_date}", "\n".join(lines))
+    if config.SAFE_MODE:
+        # results of finished trades + tomorrow's plan, in plain words; silent if nothing to do
+        results = [notify.format_event(e) for e in events if e["type"] in ("sold", "stop", "target", "expired")]
+        body = plan_message(plan, "tomorrow")
+        msg = "\n".join(results + ([""] if results and body else []) + ([body] if body else []))
+        if msg.strip() and not args.demo:
+            notify.send("Plan for tomorrow" if body else "Trade update", msg)
+    else:
+        lines = [notify.format_event(e) for e in events]
+        if actionable:
+            lines.append(f"\n📈 {len(actionable)} new swing idea(s) for tomorrow ({mkt['regime_label']} market):")
+            for pk in actionable:
+                tgt = f"target ₹{pk['target']:,}" if pk.get("target") else f"exit above ₹{pk['exit_hint']:,}"
+                lines.append(f"• {pk['symbol']} ({pk['strategy_name']}) buy ≤ ₹{pk['max_entry']:,}, "
+                             f"stop ₹{pk['stop']:,}, {tgt} [{pk['confidence']}]")
+        if changes.get("added") and snaps:
+            lines.append(f"\n🧺 Long-term portfolio changes: add {', '.join(changes['added'])}; "
+                         f"remove {', '.join(changes['removed']) or 'none'}")
+        if lines and not args.demo:
+            notify.send(f"Stock Finder - {last_date}", "\n".join(lines))
     log.info("done in %.0fs: %d actionable, %d LT picks, %d events, %d new tracked",
              time.time() - t0, len(actionable), len(lt_picks), len(events), len(new_trades))
 
@@ -381,7 +500,7 @@ def run_live(args) -> None:
         log.info("Market closed - nothing to do")
         return
     tr = tracker.load()
-    syms = sorted({t["symbol"] for t in tr["trades"] if t["status"] in ("open", "pending")})
+    syms = sorted({t["symbol"] for t in tr["trades"] if t["status"] in ("open", "pending", "selling")})
     try:
         latest = json.loads((config.OUT_DIR / "latest.json").read_text(encoding="utf-8"))
         syms = sorted(set(syms) | {x["symbol"] for x in latest.get("swing", [])[:20]}
@@ -408,6 +527,16 @@ def run_morning(args) -> None:
     data_day = datetime.fromisoformat(latest["data_date"]).date()
     if (data.now_ist().date() - data_day).days > 4:
         log.info("Data is stale (%s) - skipping morning reminder", data_day)
+        return
+    if config.SAFE_MODE:
+        plan = latest.get("plan") or {"buy": [], "sell": [], "hold": []}
+        body = plan_message(plan, "today")
+        if not (plan["buy"] or plan["sell"]):
+            log.info("Nothing to buy or sell today - no reminder sent")
+            return
+        log.info("morning reminder:\n%s", body)
+        if not args.demo:
+            notify.send("Today's plan (market opens 9:15 AM)", body)
         return
     tr = tracker.load()
     pending = [t for t in tr["trades"] if t["status"] == "pending"]

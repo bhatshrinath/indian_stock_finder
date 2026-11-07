@@ -43,5 +43,23 @@ def load_universe() -> pd.DataFrame:
     return df
 
 
+def load_nifty50() -> set[str]:
+    """Symbols of the Nifty 50 (India's 50 largest, most liquid companies)."""
+    for url in config.NIFTY50_URLS:
+        try:
+            r = requests.get(url, headers={"User-Agent": config.USER_AGENT}, timeout=10)
+            if r.ok and "Symbol" in r.text[:300]:
+                df = _parse(r.text)
+                if len(df) >= 45:
+                    try:
+                        config.NIFTY50_FALLBACK.write_text(r.text, encoding="utf-8")
+                    except OSError:
+                        pass
+                    return set(df.symbol)
+        except Exception as exc:
+            log.warning("Nifty 50 fetch failed from %s: %s", url, exc)
+    return set(_parse(config.NIFTY50_FALLBACK.read_text(encoding="utf-8-sig")).symbol)
+
+
 def yahoo_ticker(symbol: str) -> str:
     return f"{symbol}.NS"

@@ -79,12 +79,20 @@ def format_event(e: dict) -> str:
         return f"💰 EXIT {s}: sell signal at {rupees(t['exit'])} ({t['ret_pct']:+.1f}%)"
     if kind == "time":
         return f"⏱ TIME EXIT {s} at {rupees(t['exit'])} ({t['ret_pct']:+.1f}%)"
+    if kind == "sell_signal":
+        return f"💰 SELL {s} at tomorrow's market open (9:15 AM). The trade is complete."
+    if kind == "sold":
+        return f"✔ {s} sold at {rupees(t['exit'])} ({t['ret_pct']:+.1f}%)"
     if kind == "expired":
         return f"⏭ SKIPPED {s}: opened outside the buy range"
     if kind == "stop_raised":
         return f"⬆ {s}: trailing stop raised to {rupees(t['stop'])}"
     if kind == "live_stop":
-        return f"⚠ {s} touched stop-loss {rupees(t['stop'])} (now {rupees(e['price'])}). Consider selling."
+        return (f"🔴 SELL NOW: all your {s} shares. It fell to the safety price {rupees(t['stop'])} "
+                f"(now {rupees(e['price'])}). Selling now keeps the loss small.")
+    if kind == "live_skip":
+        return (f"⏭ Don't buy {s} today: it opened at {rupees(e['price'])}, outside the buy range "
+                f"(up to {rupees(t['max_entry'])}). No action needed.")
     if kind == "live_target":
         return f"🎯 {s} reached target {rupees(t['target'])} (now {rupees(e['price'])}). Consider booking profit."
     return f"{kind}: {s}"

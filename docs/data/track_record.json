@@ -1,29 +1,5 @@
 {
- "trades": [
-  {
-   "id": "APARINDS-dip_buy-2026-11-06",
-   "symbol": "APARINDS",
-   "name": "Apar Industries Ltd.",
-   "strategy": "dip_buy",
-   "signal_date": "2026-11-06",
-   "signal_close": 14106.0,
-   "max_entry": 14388.12,
-   "stop": 12007.13,
-   "initial_stop": 12007.13,
-   "target": null,
-   "risk": 2098.87,
-   "status": "pending",
-   "entry": null,
-   "entry_date": null,
-   "exit": null,
-   "exit_date": null,
-   "ret_pct": null,
-   "days": 0,
-   "hi_close": null,
-   "score": 55,
-   "atr": 839.55
-  }
- ],
+ "trades": [],
  "portfolio_snapshots": [
   {
    "date": "2026-11-05",

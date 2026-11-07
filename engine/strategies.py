@@ -69,6 +69,16 @@ class Features:
         above = ix > self.ix_sma200
         self.regime = pd.Series(np.where(bull, 2, np.where(above, 1, 0)), index=ix.index)
         self.regime_ok = (self.regime >= 1)
+        # blue-chip mask (set_large); default = every stock
+        self.large = pd.Series(True, index=self.close.columns)
+
+    def set_large(self, symbols) -> None:
+        """Mark which stocks count as large, safe blue chips (e.g. the Nifty 50)."""
+        self.large = pd.Series(self.close.columns.isin(list(symbols)), index=self.close.columns)
+
+    def large_frame(self) -> pd.DataFrame:
+        return pd.DataFrame(np.repeat(self.large.values[None, :], len(self.close), axis=0),
+                            index=self.close.index, columns=self.close.columns)
 
     def broadcast(self, s: pd.Series) -> pd.DataFrame:
         """Turn a per-date Series into a frame aligned with the stock columns."""
@@ -99,6 +109,18 @@ def _dip_in_uptrend(f: Features):
     return sig.fillna(False), stop
 
 
+def _safe_dip(f: Features):
+    """Very-low-risk version of the dip buy: only Nifty 50 blue chips that are
+    calmer than average (yearly volatility under 30%), clearly above their
+    200-day average, with the market itself not in a downtrend."""
+    sig = (f.large_frame() & f.uptrend & f.liquid & (f.rsi2 < 10) & (f.rs6 > -0.05)
+           & (f.close > f.sma200 * 1.03) & (f.vol252 < 0.30)
+           & (f.sma200 > f.sma200.shift(20))                 # long-term trend still rising
+           & f.broadcast(f.regime_ok))
+    stop = f.close - 2.5 * f.atr14
+    return sig.fillna(False), stop
+
+
 def _breakout(f: Features):
     """New 50-day high on strong volume, in an established uptrend, from a market leader."""
     rng = (f.high - f.low).replace(0, np.nan)
@@ -125,6 +147,13 @@ def _ema_bounce(f: Features):
 
 
 SWING_STRATEGIES: list[SwingStrategy] = [
+    SwingStrategy(
+        key="safe_dip", name="Blue-chip dip (safe)",
+        plain_english=("One of India's 50 biggest, steadiest companies fell for 2-3 days while its "
+                       "long-term trend is still rising. Such dips in blue chips usually recover within days."),
+        how_to_exit=("Sell when the price closes above its 5-day average (usually 3-7 days), "
+                     "or at the safety price, or after 10 trading days, whichever comes first."),
+        signal_fn=_safe_dip, target_r=None, max_hold=10, exit_above_sma5=True),
     SwingStrategy(
         key="dip_buy", name="Dip in an uptrend",
         plain_english=("A strong, rising stock has fallen sharply for 2-3 days. Such short dips "
