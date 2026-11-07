@@ -86,7 +86,7 @@ def simulate_trade(f: Features, strat: SwingStrategy, col: int, s: int, stop_px:
 
 def _prep_numpy(f: Features):
     if not hasattr(f, "_np"):
-        f._np = {k: getattr(f, k).to_numpy(dtype=float) for k in
+        f._np = {k: getattr(f, k).to_numpy(dtype=float, copy=True) for k in
                  ("open", "high", "low", "close", "sma5", "atr14")}
 
 
