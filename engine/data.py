@@ -95,15 +95,49 @@ def load_yfinance(symbols: list[str], period: str = config.HISTORY_PERIOD) -> Pr
     # fill the most recent days.
     recent = download("1mo")
 
+    def norm_index(ix):
+        ix = pd.to_datetime(ix)
+        if getattr(ix, "tz", None) is not None:
+            ix = ix.tz_convert("Asia/Kolkata").tz_localize(None)
+        return ix.normalize()
+
+    # If stocks still lag the index, fetch the last few sessions one ticker at a
+    # time: Yahoo's single-ticker history includes the latest day.
+    singles: dict[str, pd.DataFrame] = {}
+    probe = raw["Close"] if recent is None else recent["Close"]
+    idx_last = probe[config.INDEX_SYMBOL].dropna().index.max() if config.INDEX_SYMBOL in probe else None
+    stocks_last = probe.drop(columns=[config.INDEX_SYMBOL], errors="ignore").dropna(how="all").index.max()
+    if idx_last is not None and stocks_last is not None and stocks_last < idx_last:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def one(t):
+            try:
+                h = yf.Ticker(t).history(period="5d", interval="1d", auto_adjust=True)
+                return t, h if h is not None and not h.empty else None
+            except Exception:
+                return t, None
+        stock_tickers = [t for t in tickers if t != config.INDEX_SYMBOL]
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for t, h in ex.map(one, stock_tickers):
+                if h is not None:
+                    h.index = norm_index(h.index)
+                    singles[t.replace(".NS", "")] = h
+        log.info("Filled latest sessions for %d/%d stocks from single-ticker history",
+                 len(singles), len(stock_tickers))
+
     def field_frame(name: str) -> pd.DataFrame:
         def prep(r):
             f = r[name].copy()
             f.columns = [c.replace(".NS", "") for c in f.columns]
-            f.index = pd.to_datetime(f.index).tz_localize(None).normalize()
+            f.index = norm_index(f.index)
             return f[~f.index.duplicated(keep="last")]
         f = prep(raw)
         if recent is not None and name in recent.columns.get_level_values(0):
             f = f.combine_first(prep(recent))
+        if singles:
+            extra = pd.DataFrame({s: h[name] for s, h in singles.items() if name in h.columns})
+            extra = extra[~extra.index.duplicated(keep="last")]
+            f = extra.combine_first(f)            # fresh single-ticker values win
         return f.sort_index()
 
     close = field_frame("Close")
@@ -152,14 +186,23 @@ def live_quotes(symbols: list[str]) -> dict[str, dict]:
         return out
     try:
         import yfinance as yf
+        from concurrent.futures import ThreadPoolExecutor
         tickers = [yahoo_ticker(s) for s in symbols] + [config.INDEX_SYMBOL]
-        df = yf.download(tickers, period="5d", interval="1d", auto_adjust=True,
-                         group_by="column", progress=False, threads=True)
+
+        # one ticker at a time: Yahoo's batch download can omit the current session
+        def one(t):
+            try:
+                return t, yf.Ticker(t).history(period="5d", interval="1d", auto_adjust=True)
+            except Exception:
+                return t, None
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            hist = dict(ex.map(one, tickers))
         for t in tickers:
             try:
-                c = df["Close"][t].dropna()
-                hi = df["High"][t].dropna()
-                lo = df["Low"][t].dropna()
+                h = hist.get(t)
+                if h is None or h.empty:
+                    continue
+                c, hi, lo = h["Close"].dropna(), h["High"].dropna(), h["Low"].dropna()
                 if c.empty:
                     continue
                 key = "NIFTY" if t == config.INDEX_SYMBOL else t.replace(".NS", "")
