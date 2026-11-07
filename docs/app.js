@@ -6,7 +6,7 @@
 
 const DATA = "data/";
 const LS = { settings: "sf.settings", my: "sf.my", seen: "sf.seenIdeas", alerted: "sf.alerted", tab: "sf.tab" };
-const DEFAULTS = { tradeMoney: 20000, capital: 500000, ltPct: 70, swingPct: 30, riskPct: 1, maxPosPct: 20, notify: false };
+const DEFAULTS = { tradeMoney: 20000, protect: true, capital: 500000, ltPct: 70, swingPct: 30, riskPct: 1, maxPosPct: 20, notify: false };
 const S = { latest: null, live: null, news: null, bt: null, track: null, swingFilter: "buy" };
 
 // ------------------------------------------------------------------ storage (safe)
@@ -574,6 +574,8 @@ function renderSettings() {
     <div class="card">
       <label class="field">Money for trading (₹)<span class="hint">Used for the daily plan: ${slotsText()}. Suggested: ₹20,000. Below ₹15,000, fixed broker charges take most of the profit.</span>
         <input id="s-money" type="number" inputmode="numeric" min="2000" step="1000" value="${st.tradeMoney}"></label>
+      <label class="field">Protect my money (recommended)<span class="hint">Keeps most of it in an FD / liquid fund so that a bad year in shares is covered by interest.</span>
+        <select id="s-protect"><option value="1" ${st.protect ? "selected" : ""}>Yes</option><option value="0" ${st.protect ? "" : "selected"}>No, use all of it for shares</option></select></label>
       <div class="btns"><button class="btn primary" id="s-money-save">Save</button></div>
     </div>
     <h3 style="margin:18px 0 8px">Other settings (long-term investing and detailed screens)</h3>
@@ -605,7 +607,7 @@ function renderSettings() {
       <p>Source: ${esc(S.latest?.data_source || "–")}, last market day ${esc(S.latest?.data_date || "–")}, updated ${esc(ago(S.latest?.generated))}.</p>
       <div class="btns"><button class="btn small" id="s-reload">Refresh now</button><button class="btn small" id="s-clear">Clear my positions</button></div>
     </div>`;
-  $("#s-money-save").onclick = () => { saveMoney(+$("#s-money").value); renderSettings(); $("#s-money-save").textContent = "Saved ✓"; };
+  $("#s-money-save").onclick = () => { store.set(LS.settings, { ...settings(), protect: $("#s-protect").value === "1" }); saveMoney(+$("#s-money").value); renderSettings(); $("#s-money-save").textContent = "Saved ✓"; };
   $("#s-save").onclick = () => {
     const lt = +$("#s-lt").value, sw = +$("#s-sw").value;
     if (lt + sw > 100) { alert("Long-term + swing cannot be more than 100%."); return; }
@@ -833,9 +835,19 @@ function renderInvest() {
 }
 
 function renderMore() {
+  const main = [
+    ["help", "❓", "How to use this app", "3 simple steps"],
+    ["record", "📊", "Is it working?", "Results so far"],
+    ["settings", "⚙️", "Settings", "My money, phone alerts"],
+    ["advanced", "🧰", "Advanced", "Detailed screens for experts"],
+  ];
+  $("#tab-more").innerHTML = `<h2>More</h2><div class="menu">${main.map(([k, ic, t, d]) =>
+    `<button class="menu-item" data-goto="${k}"><span class="ic">${ic}</span><span><b>${t}</b><small>${d}</small></span><span class="chev">›</span></button>`).join("")}</div>`;
+  renderAdvanced();
+}
+
+function renderAdvanced() {
   const items = [
-    ["help", "❓", "How to use this app", "3 simple steps, and what the words mean"],
-    ["record", "📊", "Is it working?", "Past results and the live record"],
     ["plan", "📋", "Daily plan", "Buy / sell / hold list followed by the app"],
     ["invest", "🌱", "Long-term investing", "Strong companies to hold for years"],
     ["ideas", "💡", "All buy ideas", "Every idea, including riskier ones"],
@@ -843,9 +855,8 @@ function renderMore() {
     ["longterm", "🧾", "Long-term details", "Company numbers for each stock"],
     ["market", "🌐", "Market details", "Nifty chart and market health"],
     ["marketnews", "📰", "Market news", "General headlines"],
-    ["settings", "⚙️", "Settings", "My money, alerts, install on phone"],
   ];
-  $("#tab-more").innerHTML = `<h2>More</h2><div class="menu">${items.map(([k, ic, t, d]) =>
+  $("#tab-advanced").innerHTML = `<h2>Advanced</h2><div class="menu">${items.map(([k, ic, t, d]) =>
     `<button class="menu-item" data-goto="${k}"><span class="ic">${ic}</span><span><b>${t}</b><small>${d}</small></span><span class="chev">›</span></button>`).join("")}</div>`;
 }
 
@@ -1096,30 +1107,55 @@ function renderPlan() {
 
 const addDays = (iso, n) => { const d = new Date(iso); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 
+// Protected plan: the stock part is sized so that, if every stock fell to its
+// safety price (at most 12% below), one year of interest on the safe part
+// (FD / liquid fund, ~6.5%) would cover it.
+const SAFE_YIELD = 0.065, MAX_STOCK_LOSS = 0.12, MIN_SHORT_TERM = 15000;
+
+function moneyPlan() {
+  const money = tradeMoney();
+  if (!settings().protect) return { money, stock: money, safe: 0, protect: false };
+  const stock = Math.floor((money * SAFE_YIELD) / (SAFE_YIELD + MAX_STOCK_LOSS) / 500) * 500;
+  return { money, stock, safe: money - stock, protect: true };
+}
+
 function suggestions() {
   const L = S.latest || {};
   const out = [];
+  const plan = moneyPlan();
   const swing = L.swing || [];
   for (const b of (L.plan?.buy || [])) {
     const pk = swing.find((x) => x.symbol === b.symbol) || {};
-    out.push({ kind: "swing", symbol: b.symbol, name: b.name, price: b.price, max_entry: b.max_entry, stop: b.stop,
+    if (plan.stock < MIN_SHORT_TERM) break;             // short trades only pay off with larger amounts
+    out.push({ kind: "swing", amount: plan.stock, symbol: b.symbol, name: b.name, price: b.price, max_entry: b.max_entry, stop: b.stop,
       horizon: "Short term · about 1 week", sellRule: "The app will tell you when to sell (usually within a week).",
       why: (SIMPLE[b.strategy] || {}).why, odds: outOf10(b.hist_win_rate), news: pk.news || [] });
   }
   const lt = (L.long_term_safe || (L.long_term?.picks || []).filter((p) => p.large)).filter((p) => !(p.warnings || []).length && !(p.red_flags || []).length
-    && p.price * 1.02 <= tradeMoney());               // only what his amount can buy
-  for (const p of lt.slice(0, 3)) {
-    out.push({ kind: "long_term", symbol: p.symbol, name: p.name, price: p.price, max_entry: +(p.price * 1.02).toFixed(2),
+)
+  // diversity: at most 2 (protected) or 3 companies, never two from the same industry
+  const nLong = plan.protect ? 2 : 3;
+  const per = plan.protect ? plan.stock / nLong : plan.stock;
+  const usedInd = new Set();
+  const chosen = [];
+  for (const p of lt) {
+    if (chosen.length >= nLong) break;
+    if (p.price * 1.02 > per || usedInd.has(p.industry || p.symbol)) continue;
+    usedInd.add(p.industry || p.symbol);
+    chosen.push(p);
+  }
+  for (const p of chosen) {
+    out.push({ kind: "long_term", amount: per, symbol: p.symbol, name: p.name, price: p.price, max_entry: +(p.price * 1.02).toFixed(2),
       stop: p.review_below, horizon: "Long term · 6 to 12 months",
       sellRule: `Hold for months. Sell if it falls below ${px(p.review_below)}, or when the app says at the monthly check.`,
       why: "A strong, steadily rising company among India's 50 biggest. Ranked by 6 and 12-month strength.",
       odds: null, news: p.news || [] });
   }
-  return out.filter((x) => x.max_entry <= tradeMoney());
+  return out.filter((x) => x.max_entry <= x.amount);
 }
 
 function suggestionCard(x) {
-  const amt = tradeMoney();
+  const amt = x.amount;
   const qty = Math.floor(amt / x.max_entry);
   const mine = myPositions().some((p) => p.symbol === x.symbol);
   return `<article class="card sugg">
@@ -1149,6 +1185,16 @@ function renderSuggestions() {
   if (act.length) {
     html += `<h2>⚠️ Sell</h2>` + act.map(({ p, s }) => `<div class="card st-card ${s.cls}"><div class="status-head">${s.icon} ${s.head}: ${esc(p.symbol)}</div><div class="small">${s.text}</div></div>`).join("");
   }
+  const mp = moneyPlan();
+  const nStocks = list.filter((x) => x.kind === "long_term").length;
+  if (mp.protect) {
+    html += `<div class="card plan-card"><h2 style="margin-top:0">Your ${inr(mp.money)} plan</h2>
+      <div class="line"><span class="ic">🏦</span><div><b>${inr(mp.safe)}</b> in a bank FD or a liquid fund (for example LIQUIDBEES). Safe, about 6.5% a year.</div></div>
+      <div class="line"><span class="ic">📈</span><div>${nStocks ? `<b>${inr(mp.stock)}</b> in the ${nStocks === 1 ? "stock" : nStocks + " stocks"} below, from different sectors, held for months.`
+        : `No suitable stock today: keep it all in the safe part for now.`}</div></div>
+      <p class="small muted">Built so that even if every stock fell to its safety price, the safe part's interest would earn it back within a year.
+        Shares are never 100% sure, but this keeps the worst case close to no loss.</p></div>`;
+  }
   html += `<h2>Suggestions</h2>`;
   html += list.length ? list.map(suggestionCard).join("")
     : `<div class="card empty">🙏 No suggestions today. The app only suggests when the odds are clearly good.</div>`;
@@ -1161,7 +1207,7 @@ function renderSuggestions() {
 function openMarkDialog(kind, sym) {
   const x = suggestions().find((s) => s.kind === kind && s.symbol === sym);
   if (!x) return;
-  const qty = Math.max(1, Math.floor(tradeMoney() / x.max_entry));
+  const qty = Math.max(1, Math.floor(x.amount / x.max_entry));
   const q = livePrice(sym);
   $("#dlg-body").innerHTML = `<h3>I bought ${esc(x.name)}</h3>
     <label class="field">How many shares?<input id="mq" type="number" inputmode="numeric" min="1" value="${qty}"></label>
@@ -1202,7 +1248,8 @@ function renderRecoNews() {
 const MAIN_TABS = ["today", "mystocks", "news", "more"];
 const TITLES = { help: "How to use", record: "Is it working?", swing: "All stock ideas", longterm: "Long-term details",
   market: "Market details", news: "Market news", settings: "Settings", mystocks: "My Stocks",
-  invest: "Long-term investing", ideas: "All buy ideas", plan: "Daily plan", marketnews: "Market news" };
+  invest: "Long-term investing", ideas: "All buy ideas", plan: "Daily plan", marketnews: "Market news",
+  advanced: "Advanced" };
 
 function renderAll() {
   renderStatus();

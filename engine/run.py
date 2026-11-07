@@ -216,18 +216,22 @@ def safe_long_term(f: Features, uni: pd.DataFrame, use_fundamentals: bool, n: in
     companies by steady 6/12-month momentum, in an uptrend, with no debt,
     loss or valuation warnings."""
     names = dict(zip(uni.symbol, uni.name))
+    inds = dict(zip(uni.symbol, uni.industry))
     sc = momentum_scores(f)
     if sc.empty:
         return []
-    big = [s for s in sc.index if bool(f.large.get(s, False))][: n + 5]
+    big = [s for s in sc.index if bool(f.large.get(s, False))][: n + 10]
+    seen_ind: set[str] = set()
     funda = fundamentals.fetch(big) if use_fundamentals else {}
     out = []
     for s in big:
         pts, warn = fundamentals.quality_check(funda.get(s, {}))
-        if warn:
+        if warn or inds.get(s, "Other") in seen_ind:      # diversity: one company per industry
             continue
+        seen_ind.add(inds.get(s, "Other"))
         price = float(f.close[s].iloc[-1])
-        out.append({"symbol": s, "name": names.get(s, s), "kind": "long_term", "large": True, "price": r2(price),
+        out.append({"symbol": s, "name": names.get(s, s), "industry": inds.get(s, ""), "kind": "long_term",
+                    "large": True, "price": r2(price),
                     # very low risk: never more than 12% below today's price (or the 200-day average if closer)
                     "review_below": r2(max(float(f.sma200[s].iloc[-1]), price * 0.88)),
                     "ret_12m": r2(f.ret252[s].iloc[-1] * 100), "score": r2(sc.loc[s, "score"]),
