@@ -22,7 +22,9 @@ const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const safeUrl = (u) => (/^https?:\/\//i.test(u || "") ? esc(u) : "#");
 const inr = (x, d = 0) => (x == null || isNaN(x) ? "–" : "₹" + Number(x).toLocaleString("en-IN", { maximumFractionDigits: d, minimumFractionDigits: d }));
-const px = (x) => inr(x, x != null && Math.abs(x) < 1000 ? 2 : 1);
+// prices: whole rupees above ₹1,000, otherwise up to 2 decimals (no trailing ".0")
+const px = (x) => (x == null || isNaN(x) ? "–" : "₹" + Number(x).toLocaleString("en-IN", { maximumFractionDigits: Math.abs(x) < 1000 ? 2 : 0 }));
+const shares = (n) => `${num(n, 0)} share${n === 1 ? "" : "s"}`;
 const num = (x, d = 1) => (x == null || isNaN(x) ? "–" : Number(x).toLocaleString("en-IN", { maximumFractionDigits: d }));
 const pct = (x, d = 1, sign = true) => (x == null || isNaN(x) ? "–" : (sign && x > 0 ? "+" : "") + Number(x).toFixed(d) + "%");
 const tone = (x) => (x > 0 ? "up" : x < 0 ? "down" : "");
@@ -149,9 +151,9 @@ function renderStatus() {
   el.innerHTML = `<span class="dot ${liveOn ? "live" : ""}"></span>${liveOn ? "Market open · prices" : "Market closed · data"} ${esc(ago(upd))}`;
 }
 
-// ------------------------------------------------------------------ TODAY
-function renderToday() {
-  const el = $("#tab-today");
+// ------------------------------------------------------------------ MARKET DETAILS (advanced view, under "More")
+function renderMarket() {
+  const el = $("#tab-market");
   const L = S.latest;
   if (!L) { el.innerHTML = setupHelp(); return; }
   const m = L.market;
@@ -218,13 +220,11 @@ function trackMini() {
 // ------------------------------------------------------------------ alerts
 function computeAlerts() {
   const out = [];
+  // same plain-language rules as the My Stocks screen
   for (const p of myPositions()) {
-    const q = livePrice(p.symbol);
-    const last = q ? q.price : p.lastPrice;
-    if (last == null) continue;
-    if (p.stop && last <= p.stop) out.push({ level: "bad", key: `${p.id}-stop`, text: `${p.symbol} is at ${px(last)}, at or below your stop-loss ${px(p.stop)}. Sell to protect capital.` });
-    else if (p.target && last >= p.target) out.push({ level: "good", key: `${p.id}-target`, text: `${p.symbol} reached the target ${px(p.target)} (now ${px(last)}). Consider booking profit.` });
-    else if (p.stop && (last - p.stop) / last < 0.015) out.push({ level: "warn", key: `${p.id}-near`, text: `${p.symbol} is close to its stop-loss (${px(p.stop)}).` });
+    const s = positionStatus(p);
+    if (s.head === "HOLD") continue;
+    out.push({ level: s.cls === "ok" ? "info" : s.cls, key: `${p.id}-${s.head}`, text: `${s.head}: ${p.symbol}. ${s.text}` });
   }
   for (const t of S.latest?.open_trades || []) {
     if (t.status === "pending") out.push({ level: "info", key: `${t.id}-pending`, text: `New idea: ${t.symbol}, buy at the next open if the price is ≤ ${px(t.max_entry)}.` });
@@ -467,7 +467,20 @@ function renderRecord() {
   const trades = (S.track?.trades || []).slice().reverse();
   const closed = trades.filter((x) => ["target", "stop", "exit_rule", "time"].includes(x.status));
   const statusTxt = { target: "🎯 Target", stop: "🛑 Stop", exit_rule: "💰 Exit", time: "⏱ Time", open: "🔵 Open", pending: "⏳ Pending", expired: "⏭ Skipped" };
-  let html = `<h2>Live track record</h2>
+  // plain-language summary first; the detailed tables follow below
+  const simple = Object.entries(bt.swing || {}).filter(([, v]) => v.trades).map(([k, v]) => {
+    const n = outOf10(v.win_rate);
+    const name = (SIMPLE[k] || {}).title || v.name || k;
+    return `<li><b>${esc(name)}:</b> made money <b>${n} out of 10</b> times. ${working(v)
+      ? `On average each trade <span class="up">gained ${pct(v.avg_return, 1, false)}</span> after costs.`
+      : `<span class="down">Not profitable enough, so the app doesn't use it right now.</span>`}</li>`;
+  }).join("");
+  let html = `<div class="card"><h2 style="margin-top:0">In simple words</h2>
+    ${t.closed ? `<p>Since ${esc(fmtDate(t.since))}, the app's real ideas made money <b>${outOf10(t.win_rate)} out of 10</b> times, averaging <b class="${tone(t.avg_return)}">${pct(t.avg_return)}</b> per trade.</p>`
+      : `<p>The app has just started recording its real ideas. Check back after a few weeks to see real results.</p>`}
+    ${simple ? `<p>Tested on the past 5 years of prices:</p><ul class="rules">${simple}</ul>` : ""}
+    <p class="small muted">No method wins every time. The goal is small losses and bigger or more frequent wins.</p></div>
+    <h2>Live track record</h2>
     <div class="card"><p class="small muted">Every BUY idea is recorded the day it's published and followed to its real exit. No hindsight, no editing.${t.since ? " Tracking since " + esc(fmtDate(t.since)) + "." : ""}</p>
     <div class="kv"><div><span>Closed trades</span><b>${t.closed || 0}</b></div><div><span>Win rate</span><b>${pct(t.win_rate, 0, false)}</b></div>
     <div><span>Average per trade</span><b class="${tone(t.avg_return)}">${pct(t.avg_return, 2)}</b></div><div><span>Best / worst</span><b>${pct(t.best)} / ${pct(t.worst)}</b></div></div></div>`;
@@ -578,15 +591,275 @@ function renderSettings() {
   $("#s-clear").onclick = () => { if (confirm("Remove all your recorded positions from this device?")) { store.set(LS.my, []); renderAll(); } };
 }
 
+// ================================================================== SIMPLE VIEWS
+// Plain-language screens for everyday use. Every detailed screen is still
+// available under "More".
+
+const SIMPLE = {
+  dip_buy: { title: "Good stock on a short dip", why: "A strong, rising company fell for 2–3 days. Dips like this usually recover within a week." },
+  breakout: { title: "Strong stock reaching new highs", why: "The price just rose above its recent highs, with a lot of buying." },
+  ema_bounce: { title: "Rising stock bouncing back up", why: "A stock in a healthy uptrend dipped a little and turned up again today." },
+};
+
+const MOOD = {
+  2: { icon: "🟢", cls: "good", title: "Good day to buy", text: "The overall market is rising." },
+  1: { icon: "🟡", cls: "warn", title: "Be careful today", text: "The market is unsure. Buy smaller amounts than usual." },
+  0: { icon: "🔴", cls: "bad", title: "Don't buy new stocks", text: "The market is falling. Keep your money safe. Only follow the sell instructions in My Stocks." },
+};
+
+const outOf10 = (wr) => (wr == null ? null : Math.max(1, Math.min(9, Math.round(wr / 10))));
+const hasSettings = () => !!store.get(LS.settings, null);
+
+function latestPrice(sym) {
+  const q = livePrice(sym);
+  if (q) return q.price;
+  const L = S.latest || {};
+  const a = (L.swing || []).find((x) => x.symbol === sym);
+  if (a) return a.price;
+  const b = (L.long_term?.picks || []).find((x) => x.symbol === sym);
+  if (b) return b.price;
+  const c = (L.open_trades || []).find((x) => x.symbol === sym && x.last_price);
+  return c ? c.last_price : null;
+}
+
+function greeting() {
+  const h = new Date().getHours();
+  return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+}
+
+// What should the user do with a stock they hold?
+function positionStatus(p) {
+  const L = S.latest || {};
+  const now = latestPrice(p.symbol) ?? p.lastPrice ?? p.price;
+  const sell = (L.sell_today || []).find((x) => x.symbol === p.symbol);
+  const removed = p.kind === "long_term" && (L.long_term?.changes?.removed || []).includes(p.symbol);
+  const plAmt = now != null ? (now - p.price) * p.qty : null;
+  const plPct = now != null ? (now / p.price - 1) * 100 : null;
+  let st;
+  if (p.stop && now != null && now <= p.stop)
+    st = { cls: "bad", icon: "🔴", head: "SELL NOW", text: `The price fell to your safety price (${px(p.stop)}). Selling now protects your money. Small losses are part of the plan.` };
+  else if (p.target && now != null && now >= p.target)
+    st = { cls: "good", icon: "🎉", head: "BOOK PROFIT", text: `It reached the goal price (${px(p.target)}). Sell now to lock in your profit.` };
+  else if (sell && p.kind !== "long_term")
+    st = { cls: "good", icon: "💰", head: "SELL at 9:15 AM", text: "The plan says this trade is finished. Sell when the market opens." };
+  else if (removed)
+    st = { cls: "warn", icon: "🔁", head: "SELL (monthly change)", text: "This stock has left the long-term list. Sell it and use the money for the new stocks in Invest." };
+  else if (p.stop && now != null && (now - p.stop) / now < 0.02)
+    st = { cls: "warn", icon: "🟡", head: "HOLD, but watch", text: `The price is close to your safety price (${px(p.stop)}).` };
+  else
+    st = { cls: "ok", icon: "🟢", head: "HOLD", text: "Nothing to do. The app will tell you when to sell." };
+  return { ...st, now, plAmt, plPct, action: st.head !== "HOLD" && st.head !== "HOLD, but watch" };
+}
+
+function welcomeCard() {
+  const presets = [100000, 300000, 500000, 1000000];
+  return `<div class="card welcome">
+    <h2>Welcome 🙏</h2>
+    <p>One quick question, so the app can tell you <b>exactly how many shares to buy</b>.</p>
+    <p class="big-q">How much money will you use for shares?</p>
+    <div class="preset-row">${presets.map((v) => `<button class="btn" data-preset="${v}">${inr(v)}</button>`).join("")}</div>
+    <label class="field">Or type an amount (₹)<input id="w-cap" type="number" inputmode="numeric" min="10000" step="10000" placeholder="e.g. 200000"></label>
+    <button class="btn primary wide" id="w-save">Save</button>
+    <p class="small muted">Use only money you won't need for daily life or emergencies. The app keeps 70% for long-term investing and uses 30% for short trades. You can change this later in More → Settings.</p>
+  </div>`;
+}
+
+function saveCapital(v) {
+  if (!v || v < 10000) { alert("Please enter at least ₹10,000."); return; }
+  store.set(LS.settings, { ...settings(), capital: Math.round(v) });
+  renderAll();
+}
+
+function simpleBuyCard(pk, i) {
+  const sz = swingSize(pk);
+  const info = SIMPLE[pk.strategy] || { title: pk.strategy_name, why: pk.why };
+  const odds = outOf10(pk.hist_win_rate);
+  const goal = pk.target
+    ? `<div class="line"><span class="ic">🎯</span><div><b>Goal:</b> sell at <b>${px(pk.target)}</b>${sz.qty ? `, a profit of about <b class="up">${inr(sz.gain)}</b>` : ""}</div></div>`
+    : `<div class="line"><span class="ic">🎯</span><div><b>When to sell:</b> the app will tell you, usually within a week${sz.qty && pk.reward_pct ? ` (typical profit about <b class="up">${inr((sz.amount * pk.reward_pct) / 100)}</b>)` : ""}.</div></div>`;
+  if (!sz.qty) {
+    return `<article class="card pick"><div class="pick-head"><span class="num-badge">${i}</span><div><h3>${esc(pk.name)}</h3><div class="muted small">${esc(pk.symbol)}</div></div></div>
+      <p>The price is too high for your amount. <b>Skip this one.</b></p></article>`;
+  }
+  return `<article class="card pick">
+    <div class="pick-head"><span class="num-badge">${i}</span><div><h3>${esc(pk.name)}</h3><div class="muted small">${esc(pk.symbol)} · ${esc(info.title)}</div></div></div>
+    <div class="do">Buy <b>${shares(sz.qty)}</b></div>
+    <div class="line"><span class="ic">💵</span><div>Pay up to <b>${px(pk.max_entry)}</b> per share. Total about <b>${inr(sz.amount)}</b>.<br><span class="muted small">Buy when the market opens (9:15 AM). If the price is higher, skip it.</span></div></div>
+    <div class="line"><span class="ic">🛡</span><div><b>Safety:</b> sell if it falls to <b>${px(pk.stop)}</b>. The most you can lose is about <b class="down">${inr(sz.maxLoss)}</b>.</div></div>
+    ${goal}
+    ${odds ? `<div class="line"><span class="ic">📊</span><div>Trades like this made money <b>${odds} out of 10 times</b> in the past.</div></div>` : ""}
+    ${sz.halved ? `<div class="callout warn small">Smaller amount than usual, because the market is unsure.</div>` : ""}
+    ${pk.ai_note ? `<div class="callout info small">${esc(pk.ai_note)}</div>` : ""}
+    <div class="btns two"><button class="btn primary" data-buy="${esc(pk.symbol)}|${esc(pk.strategy)}">✅ I bought it</button>
+      <button class="btn" data-detail="${esc(pk.symbol)}|${esc(pk.strategy)}">More details</button></div>
+  </article>`;
+}
+
+function renderHome() {
+  const el = $("#tab-today");
+  const L = S.latest;
+  if (!L) { el.innerHTML = setupHelp(); return; }
+  const m = L.market;
+  const mood = MOOD[m.regime] || MOOD[1];
+  const buys = (L.swing || []).filter((x) => x.action === "BUY");
+  const mine = myPositions().map((p) => ({ p, s: positionStatus(p) }));
+  const act = mine.filter((x) => x.s.action);
+  const dateTxt = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" });
+  let html = "";
+  if (L.demo) html += `<div class="callout bad">Practice data only. Real ideas appear after the first daily scan.</div>`;
+  if (!hasSettings()) html += welcomeCard();
+  html += `<p class="hello">${greeting()}! <span class="muted">${esc(dateTxt)}</span></p>
+    <div class="card mood ${mood.cls}"><div class="mood-icon">${mood.icon}</div><div><div class="mood-title">${mood.title}</div><div>${mood.text}</div></div></div>
+    <div class="summary">
+      <div><b>${m.regime === 0 ? 0 : buys.length}</b><span>to buy</span></div>
+      <div><b class="${act.length ? "down" : ""}">${act.length}</b><span>to sell</span></div>
+      <div><b>${mine.length - act.length}</b><span>to hold</span></div>
+    </div>`;
+  if (act.length) {
+    html += `<h2>⚠️ Do this first</h2>` + act.map(({ p, s }) => `<div class="card st-card ${s.cls}"><div class="status-head">${s.icon} ${s.head}: ${esc(p.symbol)}</div><div>${s.text}</div></div>`).join("")
+      + `<button class="btn wide" data-goto="mystocks">Open My Stocks</button>`;
+  }
+  html += `<h2>Stocks to buy</h2>`;
+  if (m.regime === 0) html += `<div class="card empty">No buying today. The market is falling, and protecting your money comes first. 🙏</div>`;
+  else if (!buys.length) html += `<div class="card empty">Nothing good enough to buy today. That's normal: on many days the best choice is to wait. 😌</div>`;
+  else html += buys.map((pk, i) => simpleBuyCard(pk, i + 1)).join("");
+  const lt = L.long_term || {};
+  html += `<h2>Long-term investing</h2><div class="card"><p>Your list of <b>${(lt.picks || []).length} strong companies</b> to hold for the long term. Next check-up: <b>${esc(fmtDate(lt.next_rebalance))}</b>.</p>
+    <button class="btn primary wide" data-goto="invest">See what to buy</button></div>
+    <p class="small muted center">Updated ${esc(ago(L.generated))}. New ideas come every weekday evening.</p>`;
+  el.innerHTML = html;
+  const ws = $("#w-save");
+  if (ws) ws.onclick = () => saveCapital(+$("#w-cap").value);
+}
+
+function renderMyStocks() {
+  const el = $("#tab-mystocks");
+  const mine = myPositions().map((p) => ({ p, s: positionStatus(p) }));
+  if (!mine.length) {
+    el.innerHTML = `<h2>My Stocks</h2><div class="card empty"><p style="font-size:40px;margin:0">💼</p>
+      <p>You haven't added any stocks yet.</p><p class="small">After you buy a stock from <b>Today</b> or <b>Invest</b>, tap <b>"I bought it"</b>.
+      It will show here, and the app will tell you <b>when to sell</b>.</p><button class="btn primary" data-goto="today">Go to Today</button></div>`;
+    return;
+  }
+  const total = mine.reduce((a, x) => a + (x.s.plAmt || 0), 0);
+  const invested = mine.reduce((a, x) => a + x.p.price * x.p.qty, 0);
+  mine.sort((a, b) => b.s.action - a.s.action);
+  el.innerHTML = `<h2>My Stocks</h2>
+    <div class="card total"><div class="muted">Total profit / loss</div><div class="big ${tone(total)}">${total >= 0 ? "+" : "−"}${inr(Math.abs(total))}</div>
+      <div class="muted small">on ${inr(invested)} invested</div></div>
+    ${mine.map(({ p, s }) => `<article class="card st-card ${s.cls}">
+      <div class="status-head">${s.icon} ${s.head}</div>
+      <h3>${esc(p.symbol)}</h3>
+      <div class="muted small">${esc(p.kind === "long_term" ? "Long-term" : "Short trade")} · bought ${num(p.qty, 0)} at ${px(p.price)} on ${esc(fmtDate(p.date))}</div>
+      <div class="pl"><span>Now ${s.now != null ? px(s.now) : "–"}</span>
+        <b class="${tone(s.plAmt)}">${s.plAmt == null ? "–" : (s.plAmt >= 0 ? "+" : "−") + inr(Math.abs(s.plAmt))} (${pct(s.plPct)})</b></div>
+      <p>${s.text}</p>
+      ${p.stop ? `<div class="small muted">🛡 Safety price ${px(p.stop)}${p.target ? ` · 🎯 Goal ${px(p.target)}` : ""}</div>` : ""}
+      <div class="btns"><button class="btn" data-sold="${esc(p.id)}">I sold it</button></div>
+    </article>`).join("")}
+    <p class="small muted center">Prices refresh every 15 minutes while the market is open.</p>`;
+}
+
+function renderInvest() {
+  const el = $("#tab-invest");
+  const L = S.latest;
+  if (!L) { el.innerHTML = setupHelp(); return; }
+  const lt = L.long_term || {};
+  const picks = lt.picks || [];
+  const st = settings();
+  const ltCap = (st.capital * st.ltPct) / 100;
+  const b = ltBudget();
+  const steps = { 2: "Buy in 2 steps: half the shares now, the rest after 2 weeks.", 1: "Buy in 3 steps: one third now, then one third each month.",
+    0: "The market is falling. Buy slowly: one sixth each month for 6 months." }[L.market.regime];
+  const ch = lt.changes || {};
+  let total = 0;
+  const rows = picks.map((p, i) => {
+    const sz = ltSize(p);
+    total += sz.amount;
+    return `<div class="lt-row"><span class="num-badge">${i + 1}</span>
+      <div class="lt-name"><b>${esc(p.name)}</b><div class="muted small">${esc(p.symbol)}${p.is_new && ch.removed?.length ? ` · <span class="up">new</span>` : ""}</div></div>
+      <div class="lt-qty">${sz.skip ? `<span class="small muted">Skip (price too high)</span>` : `<b>${shares(sz.qty)}</b><div class="muted small">${inr(sz.amount)}</div>`}</div>
+      ${sz.skip ? "" : `<button class="btn small" data-buy="${esc(p.symbol)}|lt" aria-label="I bought ${esc(p.symbol)}">✅ Bought</button>`}</div>`;
+  }).join("");
+  el.innerHTML = `<h2>Long-term investing</h2>
+    <div class="card"><p>These are <b>strong, growing companies</b>. Hold them for months and years, not days.</p>
+      <div class="line"><span class="ic">💰</span><div>Your long-term money: <b>${inr(ltCap)}</b>, about <b>${inr(b.per)}</b> in each company.</div></div>
+      <div class="line"><span class="ic">🪜</span><div>${esc(steps)}</div></div>
+      <div class="line"><span class="ic">📅</span><div>Check once a month. Next check-up: <b>${esc(fmtDate(lt.next_rebalance))}</b>.</div></div></div>
+    ${ch.added?.length && ch.removed?.length ? `<div class="card st-card warn"><div class="status-head">🔁 Changes this month</div>
+      <p><b>Sell:</b> ${ch.removed.map(esc).join(", ")}</p><p><b>Buy instead:</b> ${ch.added.map(esc).join(", ")}</p></div>` : ""}
+    <div class="card">${rows || `<p class="empty">No list yet.</p>`}
+      <div class="lt-total">Total: <b>${inr(total)}</b></div></div>
+    <p class="small muted">Tap <b>✅ Bought</b> after buying a stock, and it will move to My Stocks. For charts and company numbers, see More → Long-term details.</p>`;
+}
+
+function renderMore() {
+  const items = [
+    ["help", "❓", "How to use this app", "3 simple steps, and what the words mean"],
+    ["record", "📊", "Is it working?", "Past results and the live record"],
+    ["swing", "📈", "All stock ideas (detailed)", "Charts, technical numbers, news"],
+    ["longterm", "🧾", "Long-term details", "Company numbers for each stock"],
+    ["market", "🌐", "Market details", "Nifty chart and market health"],
+    ["news", "📰", "Market news", "Latest headlines"],
+    ["settings", "⚙️", "Settings", "My money, alerts, install on phone"],
+  ];
+  $("#tab-more").innerHTML = `<h2>More</h2><div class="menu">${items.map(([k, ic, t, d]) =>
+    `<button class="menu-item" data-goto="${k}"><span class="ic">${ic}</span><span><b>${t}</b><small>${d}</small></span><span class="chev">›</span></button>`).join("")}</div>`;
+}
+
+function renderHelp() {
+  $("#tab-help").innerHTML = `<h2>How to use this app</h2>
+    <div class="card"><ol class="stepper">
+      <li><b>Every evening (after 6:15 PM)</b>, open <b>Today</b>. It shows which stocks to buy tomorrow and how many shares.</li>
+      <li><b>Next morning at 9:15 AM</b>, buy in your broker app (Zerodha, Groww, etc.). Pay no more than the "Pay up to" price. Then tap <b>"I bought it"</b>.</li>
+      <li><b>Right after buying</b>, set a stop-loss order (called <b>GTT</b> in most apps) at the <b>Safety</b> price. After that, just check <b>My Stocks</b> once a day. It tells you <b>HOLD</b> or <b>SELL</b>.</li>
+    </ol></div>
+    <h2>Golden rules</h2>
+    <div class="card"><ul class="rules">
+      <li>🛡 <b>Always sell at the safety price.</b> Small losses are normal. Big losses are what hurt.</li>
+      <li>🤏 <b>Never put too much in one stock.</b> The app already keeps each trade small.</li>
+      <li>😌 <b>No trade is fine.</b> Some days and weeks there is nothing to buy.</li>
+      <li>📉 <b>Losses in a row will happen.</b> The plan works over many trades, not one.</li>
+      <li>🏦 <b>Keep emergency money in the bank or FD,</b> not in shares.</li>
+    </ul></div>
+    <h2>Words explained</h2>
+    <div class="card"><dl class="gloss">
+      <dt>Safety price (stop-loss)</dt><dd>If the price falls to this level, sell. It caps your loss.</dd>
+      <dt>Goal (target)</dt><dd>The price at which we plan to take profit.</dd>
+      <dt>Short trade</dt><dd>Held for a few days to a few weeks.</dd>
+      <dt>Long-term</dt><dd>Strong companies held for months or years and checked once a month.</dd>
+      <dt>Market mood</dt><dd>🟢 rising, 🟡 unsure, 🔴 falling. Based on the Nifty 50 index.</dd>
+      <dt>"X out of 10 times"</dt><dd>How often this kind of trade made money in the past 5 years. It's a guide, not a promise.</dd>
+    </dl></div>
+    <p class="small muted">${esc(S.latest?.disclaimer || "")}</p>`;
+}
+
+function openDetail(sym, strat) {
+  const pk = findPick(sym, strat);
+  if (!pk) return;
+  $("#dlg-body").innerHTML = swingCard(pk);
+  $("#dlg").showModal();
+}
+
 function setupHelp() {
-  return `<div class="card"><h2>Welcome 👋</h2><p>No market data has been published yet.</p>
-    <ol class="stepper small"><li>Open the GitHub repository → <b>Actions</b> tab.</li><li>Choose <b>Daily scan</b> → <b>Run workflow</b>.</li><li>After ~5 minutes, refresh this page.</li></ol></div>`;
+  return `<div class="card empty"><p style="font-size:40px;margin:0">⏳</p><h2>Getting ready</h2>
+    <p>The first stock ideas will appear here after the evening scan (weekdays, 6:15 PM).</p>
+    <p class="small muted">Setting this up? Run <b>Daily scan</b> once from the GitHub Actions tab, then refresh this page.</p></div>`;
 }
 
 // ------------------------------------------------------------------ wiring
+const MAIN_TABS = ["today", "mystocks", "invest", "more"];
+const TITLES = { help: "How to use", record: "Is it working?", swing: "All stock ideas", longterm: "Long-term details",
+  market: "Market details", news: "Market news", settings: "Settings" };
+
 function renderAll() {
   renderStatus();
-  renderToday();
+  renderHome();
+  renderMyStocks();
+  renderInvest();
+  renderMore();
+  renderHelp();
+  renderMarket();
   renderSwing();
   renderLongTerm();
   if (S.bt || $("#tab-record").classList.contains("active")) renderRecord();
@@ -596,8 +869,15 @@ function renderAll() {
 }
 
 function showTab(name) {
-  document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  if (!$("#tab-" + name)) name = "today";
+  const main = MAIN_TABS.includes(name) ? name : "more";
+  document.querySelectorAll(".bottomnav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === main));
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === "tab-" + name));
+  const back = $("#back");
+  back.hidden = MAIN_TABS.includes(name);
+  $("#page-title").textContent = TITLES[name] || "";
+  $(".brand").hidden = !back.hidden;
+  $("#status").hidden = !back.hidden;
   store.set(LS.tab, name);
   if (name === "record") loadResults();
   if (name === "settings") renderSettings();
@@ -611,8 +891,17 @@ function findPick(sym, strat) {
 }
 
 document.addEventListener("click", (e) => {
-  const t = e.target.closest("[data-tab],[data-goto],[data-filter],[data-buy],[data-sell],[data-ltinfo]");
+  const t = e.target.closest("[data-tab],[data-goto],[data-filter],[data-buy],[data-sell],[data-ltinfo],[data-sold],[data-preset],[data-detail]");
   if (!t) return;
+  if (t.dataset.preset) { saveCapital(+t.dataset.preset); return; }
+  if (t.dataset.detail) { const [sym, strat] = t.dataset.detail.split("|"); openDetail(sym, strat); return; }
+  if (t.dataset.sold) {
+    if (confirm("Remove this stock from My Stocks? (Do this after you have sold it.)")) {
+      store.set(LS.my, myPositions().filter((p) => p.id !== t.dataset.sold));
+      renderAll();
+    }
+    return;
+  }
   if (t.dataset.tab) showTab(t.dataset.tab);
   else if (t.dataset.goto) showTab(t.dataset.goto);
   else if (t.dataset.filter) { S.swingFilter = t.dataset.filter; renderSwing(); }

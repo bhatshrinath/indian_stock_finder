@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Stock Finder India</title>
-  <meta name="description" content="Daily swing-trade and long-term stock ideas for NSE, with stop-loss, targets, position sizing and a live track record.">
+  <meta name="description" content="Simple daily stock ideas for NSE: what to buy, how many shares, when to sell, with a live track record.">
   <meta name="theme-color" content="#0f766e">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -15,24 +15,24 @@
 </head>
 <body>
   <header class="topbar">
+    <button id="back" class="back" data-goto="more" hidden aria-label="Back">‹ Back</button>
     <div class="brand">
-      <img src="icon.svg" alt="" width="28" height="28">
-      <span>Stock Finder <small>India</small></span>
+      <img src="icon.svg" alt="" width="30" height="30">
+      <span>Stock Finder</span>
     </div>
+    <div id="page-title" class="page-title"></div>
     <div class="status" id="status" aria-live="polite">Loading…</div>
   </header>
 
-  <nav class="tabs" role="tablist">
-    <button role="tab" data-tab="today" class="active">Today</button>
-    <button role="tab" data-tab="swing">Swing</button>
-    <button role="tab" data-tab="longterm">Long-term</button>
-    <button role="tab" data-tab="record">Results</button>
-    <button role="tab" data-tab="news">News</button>
-    <button role="tab" data-tab="settings" aria-label="Settings">⚙</button>
-  </nav>
-
   <main id="app">
+    <!-- simple everyday screens -->
     <section id="tab-today" class="tab active"></section>
+    <section id="tab-mystocks" class="tab"></section>
+    <section id="tab-invest" class="tab"></section>
+    <section id="tab-more" class="tab"></section>
+    <!-- detailed screens (reached from "More") -->
+    <section id="tab-help" class="tab"></section>
+    <section id="tab-market" class="tab"></section>
     <section id="tab-swing" class="tab"></section>
     <section id="tab-longterm" class="tab"></section>
     <section id="tab-record" class="tab"></section>
@@ -40,7 +40,14 @@
     <section id="tab-settings" class="tab"></section>
   </main>
 
-  <dialog id="dlg"><div id="dlg-body"></div><form method="dialog"><button class="btn">Close</button></form></dialog>
+  <nav class="bottomnav" aria-label="Main">
+    <button data-tab="today" class="active"><span class="ic">🏠</span>Today</button>
+    <button data-tab="mystocks"><span class="ic">💼</span>My Stocks</button>
+    <button data-tab="invest"><span class="ic">🌱</span>Invest</button>
+    <button data-tab="more"><span class="ic">☰</span>More</button>
+  </nav>
+
+  <dialog id="dlg"><div id="dlg-body"></div><form method="dialog"><button class="btn wide">Close</button></form></dialog>
 
   <footer class="foot" id="disclaimer"></footer>
   <script src="app.js"></script>

@@ -4,6 +4,10 @@ A free, self-updating stock research app for NSE (Indian) stocks, built for a re
 **clear, rule-based ideas** instead of tips and noise. It runs entirely on GitHub (no server, no cost) and
 works on phone and laptop. You can install it on a phone's home screen like an app.
 
+**Made for everyday use by a non-expert.** Four big buttons:
+**Today** (what to buy, how many shares, the most you can lose), **My Stocks** (HOLD / SELL NOW / BOOK PROFIT
+for everything you bought), **Invest** (the long-term list with share counts) and **More** (help, results, all details).
+
 **What it gives you every day**
 
 | | |
@@ -69,6 +73,7 @@ After that it runs by itself:
 |---|---|---|
 | **Daily scan** | 6:15 PM, Mon-Fri | Downloads 5 years of data, runs all backtests, finds tomorrow's ideas, updates the long-term portfolio, reads news, records the track record, sends alerts |
 | **Live prices** | Every 15 min, 9:15 AM-3:30 PM | Refreshes prices in the app and alerts if a recommended trade touches its stop-loss or target |
+| **Morning reminder** | 8:45 AM, Mon-Fri | Sends today's buy list (buy limit, stop-loss, target) to your phone before the market opens (needs an alert channel below) |
 | **Tests** | On code changes | Checks the engine (including a test that the backtest never "peeks" at future prices) |
 
 > GitHub pauses scheduled workflows in repos with no activity for 60 days. The bot's own data commits normally count as activity.

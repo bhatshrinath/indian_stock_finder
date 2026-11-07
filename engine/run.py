@@ -2,6 +2,7 @@
 
     python -m engine.run --mode full     # after market close: scan, backtest, recommend, alert
     python -m engine.run --mode live     # during market hours: live prices + stop/target alerts
+    python -m engine.run --mode morning  # 8:45 AM IST: pre-market reminder of today's buys
     python -m engine.run --mode full --demo   # offline test with synthetic data
 """
 from __future__ import annotations
@@ -331,6 +332,11 @@ def run_full(args) -> None:
                       "next_rebalance": next_rebalance(f.close.index[-1]),
                       "live_performance": perf, "size": config.LT_PORTFOLIO_SIZE},
         "open_trades": open_trades,
+        # trades whose exit was triggered by the latest close: tell holders to sell at the next open
+        "sell_today": [{"symbol": t["symbol"], "reason": t["status"], "price": t.get("exit"),
+                        "ret_pct": t.get("ret_pct")}
+                       for t in tr["trades"] if t.get("exit_date") == last_date
+                       and t["status"] in ("target", "stop", "exit_rule", "time")],
         "track_summary": tracker.summary(tr),
         "strategies": [{"key": s.key, "name": s.name, "why": s.plain_english, "exit": s.how_to_exit,
                         "stats": {k: bt.get(s.key, {}).get(k) for k in
@@ -392,9 +398,46 @@ def run_live(args) -> None:
     log.info("live: %d quotes, %d events", len(quotes), len(events))
 
 
+def run_morning(args) -> None:
+    """Pre-market reminder (8:45 AM IST): today's buy ideas with limits, stops and targets."""
+    try:
+        latest = json.loads((config.OUT_DIR / "latest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        log.info("No data yet - skipping morning reminder")
+        return
+    data_day = datetime.fromisoformat(latest["data_date"]).date()
+    if (data.now_ist().date() - data_day).days > 4:
+        log.info("Data is stale (%s) - skipping morning reminder", data_day)
+        return
+    tr = tracker.load()
+    pending = [t for t in tr["trades"] if t["status"] == "pending"]
+    open_ = [t for t in tr["trades"] if t["status"] == "open"]
+    mkt = latest.get("market", {})
+    lines = [f"Market mood: {mkt.get('regime_label', '-')}. Market opens at 9:15 AM."]
+    lines.append("")
+    if pending:
+        lines.append(f"🛒 Buy today at the open ({len(pending)}):")
+        for t in pending:
+            exit_ = f"target ₹{t['target']:,}" if t.get("target") else "exit when it closes above its 5-day average"
+            lines.append(f"• {t['symbol']}: buy only if price ≤ ₹{t['max_entry']:,}. "
+                         f"Stop-loss about ₹{t['stop']:,}, {exit_}")
+        lines.append("Place the stop-loss right after buying. Skip a stock if it opens above the limit.")
+    else:
+        lines.append("No new buys today. Patience is part of the plan.")
+    if open_:
+        lines.append("")
+        lines.append(f"📂 Open trades: {', '.join(t['symbol'] for t in open_)}. Check stops are in place.")
+    lines.append("")
+    lines.append("Quantities for your capital are in the app.")
+    msg = chr(10).join(lines)
+    log.info("morning reminder:\n%s", msg)
+    if not args.demo:
+        notify.send("Good morning - today's plan", msg)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["full", "live"], default="full")
+    ap.add_argument("--mode", choices=["full", "live", "morning"], default="full")
     ap.add_argument("--demo", action="store_true", help="synthetic data (offline testing)")
     ap.add_argument("--no-news", action="store_true")
     ap.add_argument("--no-backtest", action="store_true")
@@ -408,6 +451,8 @@ def main(argv=None) -> int:
         tracker.FILE = config.OUT_DIR / "track_record.json"
     if args.mode == "full":
         run_full(args)
+    elif args.mode == "morning":
+        run_morning(args)
     else:
         run_live(args)
     return 0
