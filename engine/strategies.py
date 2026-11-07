@@ -112,11 +112,14 @@ def _dip_in_uptrend(f: Features):
 def _safe_dip(f: Features):
     """Very-low-risk version of the dip buy: only Nifty 50 blue chips that are
     calmer than average (yearly volatility under 30%), clearly above their
-    200-day average, with the market itself not in a downtrend."""
+    200-day average, and ONLY while the overall market is rising (Nifty above
+    its 50 and 200-day averages). On 5 years of real data this market filter
+    lifted the win rate from 63% to 66% and the profit factor from 1.19 to 1.52,
+    and kept the last 12 months profitable (see engine/research.py)."""
     sig = (f.large_frame() & f.uptrend & f.liquid & (f.rsi2 < 10) & (f.rs6 > -0.05)
            & (f.close > f.sma200 * 1.03) & (f.vol252 < 0.30)
            & (f.sma200 > f.sma200.shift(20))                 # long-term trend still rising
-           & f.broadcast(f.regime_ok))
+           & f.broadcast(f.regime == 2))                     # market rising
     stop = f.close - 2.5 * f.atr14
     return sig.fillna(False), stop
 
@@ -150,7 +153,7 @@ SWING_STRATEGIES: list[SwingStrategy] = [
     SwingStrategy(
         key="safe_dip", name="Blue-chip dip (safe)",
         plain_english=("One of India's 50 biggest, steadiest companies fell for 2-3 days while its "
-                       "long-term trend is still rising. Such dips in blue chips usually recover within days."),
+                       "long-term trend and the whole market are rising. Such dips usually recover within days."),
         how_to_exit=("Sell when the price closes above its 5-day average (usually 3-7 days), "
                      "or at the safety price, or after 10 trading days, whichever comes first."),
         signal_fn=_safe_dip, target_r=None, max_hold=10, exit_above_sma5=True),

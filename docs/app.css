@@ -134,7 +134,7 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 .page-title { font-weight: 700; font-size: 18px; flex: 1; }
 .page-title:empty { display: none; }
 .bottomnav {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: grid; grid-template-columns: repeat(4, 1fr);
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: grid; grid-template-columns: repeat(3, 1fr);
   background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom);
 }
 .bottomnav button {
@@ -204,3 +204,9 @@ dialog { max-height: 90vh; overflow-y: auto; }
 dialog .card { border: 0; box-shadow: none; padding: 0; }
 @media (max-width: 520px) { body { font-size: 17px; } .do { font-size: 22px; } }
 [hidden] { display: none !important; }
+
+/* daily plan */
+.st-card.buy { border-left-color: var(--brand); }
+.headline { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; border-left: 6px solid var(--brand); }
+.headline.calm { border-left-color: var(--up); background: var(--up-bg); }
+.preset-row.three { grid-template-columns: repeat(3, 1fr); }
