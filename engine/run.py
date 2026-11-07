@@ -228,7 +228,8 @@ def safe_long_term(f: Features, uni: pd.DataFrame, use_fundamentals: bool, n: in
             continue
         price = float(f.close[s].iloc[-1])
         out.append({"symbol": s, "name": names.get(s, s), "kind": "long_term", "large": True, "price": r2(price),
-                    "review_below": r2(float(f.sma200[s].iloc[-1]) * 0.85),
+                    # very low risk: never more than 12% below today's price (or the 200-day average if closer)
+                    "review_below": r2(max(float(f.sma200[s].iloc[-1]), price * 0.88)),
                     "ret_12m": r2(f.ret252[s].iloc[-1] * 100), "score": r2(sc.loc[s, "score"]),
                     "fundamentals": funda.get(s, {})})
         if len(out) >= n:
