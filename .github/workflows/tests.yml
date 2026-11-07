@@ -16,6 +16,9 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt pytest
       - run: python -m pytest -q
+      - name: Data source diagnostics (visible as notes on the run page)
+        continue-on-error: true
+        run: python -m engine.diagnose
       - name: End-to-end run on synthetic data
         run: python -m engine.run --mode full --demo --no-news
       - uses: actions/setup-node@v4
