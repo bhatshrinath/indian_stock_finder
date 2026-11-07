@@ -867,7 +867,7 @@ function renderAdvanced() {
 function renderHelp() {
   $("#tab-help").innerHTML = `<h2>How to use this app</h2>
     <div class="card"><ol class="stepper">
-      <li><b>Open Suggestions</b> (new ones every weekday evening). Each shows how many shares to buy, the most to pay, and roughly how long to hold.</li>
+      <li><b>Open Suggestions</b> and set <b>Money I have today</b>. The app spreads it over a few holdings: big companies from different sectors, an index fund, sometimes gold. Each stock passed every check: strong business, rising price, no bad news, market OK.</li>
       <li><b>Buy at 9:15 AM</b> in your broker app (Zerodha, Groww…), then tap <b>"I bought this"</b>.</li>
       <li><b>Check My Stocks</b> once a day. It says <b>HOLD</b> or <b>SELL</b>, and when.</li>
     </ol>
@@ -1153,7 +1153,7 @@ function basket() {
   let per = M / nHold;
   let chosen = cand.filter((x) => (x.max_entry || x.price * 1.02) <= per).slice(0, nHold);
   if (chosen.length && chosen.length < nHold) per = M / chosen.length;
-  return chosen.map((x) => {
+  const items = chosen.map((x) => {
     const isFund = x.size === "fund";
     const tag = x._swing ? "Short term · about 1 week"
       : isFund ? "Long term · hold for months" : "Long term · 6 to 12 months";
@@ -1175,6 +1175,18 @@ function basket() {
       news: x.news || (L.swing || []).find((y) => y.symbol === x.symbol)?.news || [],
     };
   });
+  // whole shares leave money unused: add extra shares where they fit,
+  // cheapest first, never letting one holding exceed half of the money
+  for (const it of items) it.qty = Math.floor(it.amount / it.max_entry);
+  let left = M - items.reduce((a, it) => a + it.qty * it.max_entry, 0);
+  for (let guard = 0; guard < 500; guard++) {
+    const fit = items.filter((it) => it.max_entry <= left && (it.qty + 1) * it.max_entry <= M * 0.5)
+      .sort((a, b) => a.qty * a.max_entry - b.qty * b.max_entry);
+    if (!fit.length) break;
+    fit[0].qty += 1;
+    left -= fit[0].max_entry;
+  }
+  return items.filter((it) => it.qty > 0);
 }
 
 function suggestions() {
@@ -1220,7 +1232,7 @@ function protectedSuggestions() {
 
 function suggestionCard(x) {
   const amt = x.amount;
-  const qty = Math.floor(amt / x.max_entry);
+  const qty = x.qty ?? Math.floor(amt / x.max_entry);
   const mine = myPositions().some((p) => p.symbol === x.symbol);
   return `<article class="card sugg">
     <div class="row"><div><h3>${esc(x.name)}</h3><div class="muted small">${esc(x.type || x.symbol)}</div></div>
@@ -1252,7 +1264,6 @@ function renderSuggestions() {
       <div class="amount-row"><input id="amt-today" type="number" inputmode="numeric" min="1000" step="500" value="${tradeMoney()}" aria-label="Money I have today">
         <button class="btn primary" id="amt-save">Update</button></div>
       <div class="pill-row">${chips.map((v) => `<button data-money="${v}" class="${v === tradeMoney() ? "on" : ""}">${inr(v)}</button>`).join("")}</div></div>`;
-    if (!settings().protect) html += smallAmountWarning();
   }
   if (act.length) {
     html += `<h2>⚠️ Sell</h2>` + act.map(({ p, s }) => `<div class="card st-card ${s.cls}"><div class="status-head">${s.icon} ${s.head}: ${esc(p.symbol)}</div><div class="small">${s.text}</div></div>`).join("");
@@ -1288,7 +1299,7 @@ function renderSuggestions() {
 function openMarkDialog(kind, sym) {
   const x = suggestions().find((s) => s.kind === kind && s.symbol === sym);
   if (!x) return;
-  const qty = Math.max(1, Math.floor(x.amount / x.max_entry));
+  const qty = x.qty ?? Math.max(1, Math.floor(x.amount / x.max_entry));
   const q = livePrice(sym);
   $("#dlg-body").innerHTML = `<h3>I bought ${esc(x.name)}</h3>
     <label class="field">How many shares?<input id="mq" type="number" inputmode="numeric" min="1" value="${qty}"></label>
