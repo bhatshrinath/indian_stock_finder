@@ -86,6 +86,8 @@ function swingSize(pk) {
   let qty = Math.floor(riskAmt / risk);
   const cap = Math.floor((swingCap * st.maxPosPct) / 100 / entry);
   qty = Math.max(0, Math.min(qty, cap));
+  // costly stocks: allow a single share if its risk is only a little above budget
+  if (qty === 0 && cap >= 1 && risk <= riskAmt * 1.5) qty = 1;
   const gainPerShare = pk.target ? pk.target - entry : (entry * (pk.reward_pct || 0)) / 100;
   return { qty, amount: qty * entry, maxLoss: qty * risk, gain: qty * gainPerShare, halved: regime === 1 };
 }
@@ -679,7 +681,7 @@ function simpleBuyCard(pk, i) {
     : `<div class="line"><span class="ic">🎯</span><div><b>When to sell:</b> the app will tell you, usually within a week${sz.qty && pk.reward_pct ? ` (typical profit about <b class="up">${inr((sz.amount * pk.reward_pct) / 100)}</b>)` : ""}.</div></div>`;
   if (!sz.qty) {
     return `<article class="card pick"><div class="pick-head"><span class="num-badge">${i}</span><div><h3>${esc(pk.name)}</h3><div class="muted small">${esc(pk.symbol)}</div></div></div>
-      <p>The price is too high for your amount. <b>Skip this one.</b></p></article>`;
+      <p>Even 1 share would risk more than is safe for your amount (about ${inr(pk.risk_per_share)} per share). <b>Skip this one.</b></p></article>`;
   }
   return `<article class="card pick">
     <div class="pick-head"><span class="num-badge">${i}</span><div><h3>${esc(pk.name)}</h3><div class="muted small">${esc(pk.symbol)} · ${esc(info.title)}</div></div></div>
