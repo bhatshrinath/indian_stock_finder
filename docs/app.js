@@ -545,10 +545,21 @@ function renderRecord() {
   }
   const lt = bt.long_term || {};
   const g = bt.long_term_guarded || {};
+  const ap = bt.long_term_app || {};
+  if (ap.curve) {
+    html += `<h2>Test: the app's long-term suggestions</h2><div class="card">
+      <p class="small">Nifty 50 companies only, 4 at a time from different sectors, checked monthly, over the last ${ap.years} years.
+        (Only the price checks can be tested on the past. The business and news checks are added live.)</p>
+      ${lineChart(ap.curve)}
+      <div class="table-wrap"><table><thead><tr><th></th><th class="num">Per year</th><th class="num">Worst fall</th><th class="num">Months beating Nifty</th></tr></thead><tbody>
+      <tr><td><b>App's suggestions</b></td><td class="num ${tone(ap.cagr)}">${pct(ap.cagr)}</td><td class="num down">${pct(ap.max_drawdown)}</td><td class="num">${pct(ap.pct_months_beat_nifty, 0, false)}</td></tr>
+      <tr><td>Nifty 50</td><td class="num">${pct(ap.bench_cagr)}</td><td class="num down">${pct(ap.bench_max_drawdown)}</td><td class="num">–</td></tr>
+      </tbody></table></div></div>`;
+  }
   if (lt.curve) {
-    html += `<h2>Backtest: long-term portfolio</h2><div class="card">${lineChart(lt.curve)}
+    html += `<h2>Older method (for comparison)</h2><div class="card"><p class="small muted">15 stocks from the top 200 companies, including mid-size ones. Not what the app suggests now.</p>${lineChart(lt.curve)}
       <div class="table-wrap"><table><thead><tr><th></th><th class="num">Yearly return</th><th class="num">Worst fall</th><th class="num">Months beating Nifty</th></tr></thead><tbody>
-      <tr><td>Model portfolio</td><td class="num up">${pct(lt.cagr)}</td><td class="num down">${pct(lt.max_drawdown)}</td><td class="num">${pct(lt.pct_months_beat_nifty, 0, false)}</td></tr>
+      <tr><td>Older 15-stock list</td><td class="num up">${pct(lt.cagr)}</td><td class="num down">${pct(lt.max_drawdown)}</td><td class="num">${pct(lt.pct_months_beat_nifty, 0, false)}</td></tr>
       <tr><td>With trend guard <span class="muted small">(50% cash when Nifty &lt; 200-day avg)</span></td><td class="num">${pct(g.cagr)}</td><td class="num down">${pct(g.max_drawdown)}</td><td class="num">${pct(g.pct_months_beat_nifty, 0, false)}</td></tr>
       <tr><td>Nifty 50</td><td class="num">${pct(lt.bench_cagr)}</td><td class="num down">${pct(lt.bench_max_drawdown)}</td><td class="num">–</td></tr>
       </tbody></table></div></div>`;
@@ -1288,6 +1299,13 @@ function renderSuggestions() {
   html += `<h2>Suggestions</h2>`;
   html += list.length ? list.map(suggestionCard).join("")
     : `<div class="card empty">🙏 No suggestions today. The app only suggests when the odds are clearly good.</div>`;
+  const hasShort = list.some((x) => x.kind === "swing");
+  if (!hasShort) {
+    const why = (L.market?.regime ?? 1) !== 2 ? "this method buys only when the whole market is rising, and right now it isn't"
+      : (L.plan?.buy || []).length ? `a short trade needs at least ${inr(MIN_SHORT_TERM)} (charges eat smaller ones)` : "no stock passed the checks today";
+    html += `<div class="card small"><div class="line"><span class="ic">⚡</span><div><b>Short term (about 1 week):</b> none today, because ${why}.</div></div>
+      <div class="line"><span class="ic">🚫</span><div><b>Same-day trading:</b> never. SEBI found about 7 in 10 people who trade within the day lose money.</div></div></div>`;
+  }
   html += `<p class="small muted center">Buy at the market opening (9:15 AM). Updated ${esc(ago(L.generated))}.</p>`;
   el.innerHTML = html;
   const ws = $("#w-money-save");

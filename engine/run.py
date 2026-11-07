@@ -467,12 +467,17 @@ def run_full(args) -> None:
         inds = dict(zip(uni.symbol, uni.industry))
         lt = backtest.backtest_momentum(f, inds)
         lt_guard = backtest.backtest_momentum(f, inds, trend_guard=True)
+        # the app's actual long-term suggestions: Nifty 50 only, 4 stocks, one per sector
+        # (price-based parts only; past business data and news are not available for a backtest)
+        n50 = set(f.large[f.large].index)
+        lt_app = backtest.backtest_momentum(f, inds, n=4, universe=n50, max_per_industry=1)
+        log.info("backtest app long-term (N50, 4 stocks): cagr %s, worst %s", lt_app.get("cagr"), lt_app.get("max_drawdown"))
         log.info("backtest momentum cagr %s vs nifty %s, guarded %s", lt.get("cagr"),
                  lt.get("bench_cagr"), lt_guard.get("cagr"))
         write_json("backtest.json", {
             "generated": datetime.now(timezone.utc).isoformat(), "data_from": str(f.close.index[0].date()),
             "data_to": last_date, "cost_round_trip_pct": config.ROUND_TRIP_COST * 100,
-            "swing": bt, "long_term": lt, "long_term_guarded": lt_guard,
+            "swing": bt, "long_term": lt, "long_term_guarded": lt_guard, "long_term_app": lt_app,
             "notes": [
                 "Universe is today's Nifty 200, so the past excludes stocks that later dropped out "
                 "(survivorship bias). Real results will likely be somewhat lower.",

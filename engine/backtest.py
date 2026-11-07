@@ -222,6 +222,7 @@ def portfolio_sim(f: Features, strat: SwingStrategy, money: float, slots: int = 
 
 # ======================================================================= long-term
 def backtest_momentum(f: Features, industries: dict[str, str], n: int = config.LT_PORTFOLIO_SIZE,
+                      universe: set | None = None, max_per_industry: int = 4,
                       trend_guard: bool = False) -> dict:
     """Monthly rebalance. trend_guard=True holds 50% cash (earning ~6%/yr) whenever
     the Nifty is below its 200-day average at the rebalance date."""
@@ -241,7 +242,9 @@ def backtest_momentum(f: Features, industries: dict[str, str], n: int = config.L
         if j <= i:
             break
         sc = momentum_scores(f, at=i)
-        new = pick_portfolio(sc, industries, n, holdings)
+        if universe is not None and not sc.empty:
+            sc = sc[sc.index.isin(list(universe))]
+        new = pick_portfolio(sc, industries, n, holdings, max_per_industry=max_per_industry)
         if not new:
             continue
         turnover = len(set(new) - set(holdings)) / max(len(new), 1)
