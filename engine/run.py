@@ -72,9 +72,9 @@ def clamp(x, lo=0.0, hi=1.0):
 
 
 REGIME_TEXT = {
-    2: ("Bullish", "Nifty is above its 50 and 200-day averages. Good time for new swing trades at normal size."),
-    1: ("Cautious", "Nifty is above its 200-day average but has lost short-term strength. Take fewer trades at half size."),
-    0: ("Bearish", "Nifty is below its 200-day average. No new swing trades; long-term buying only in small parts."),
+    2: ("Rising", "Nifty is above its 50 and 200-day averages. Good conditions: suggestions include short-term trades."),
+    1: ("Unsure", "Nifty is above its 200-day average but has lost short-term strength. Only long-term suggestions; no short-term trades."),
+    0: ("Falling", "Nifty is below its 200-day average. The app buys nothing and says SELL for long-term holdings until it recovers."),
 }
 
 

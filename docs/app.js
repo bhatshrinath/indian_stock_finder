@@ -187,28 +187,8 @@ function renderMarket() {
       <div><span>Nifty P/E</span><b>${m.nifty_pe ?? "–"}</b></div>
     </div></div>`;
 
-  html += alertsBlock();
-  html += myPositionsBlock();
-
-  html += `<h2>Today's swing ideas</h2>`;
-  if (!buys.length) {
-    const reason = m.regime === 0 ? "The market is in a downtrend, so the system is not suggesting new swing trades. Protecting capital comes first."
-      : "No setup met all the quality rules today. That's normal: on many days the best trade is no trade.";
-    html += `<div class="card empty">😌 ${reason}<br><br><button class="btn small" data-goto="swing">See watch-list ideas</button></div>`;
-  } else {
-    html += `<p class="muted small">Buy at the next market open, only within the buy range. Place the stop-loss right after buying.</p><div class="grid">${buys.map(swingCard).join("")}</div>`;
-  }
-
-  html += `<h2>Long-term portfolio</h2><div class="card">`;
-  const ch = lt.changes || {};
-  if (ch.added && ch.added.length && ch.removed && ch.removed.length) {
-    html += `<p><b>Changes this month:</b> add ${ch.added.map(esc).join(", ")}; sell ${ch.removed.map(esc).join(", ")}.</p>`;
-  }
-  html += `<p>${(lt.picks || []).length} stocks, equal amounts. ${esc(lt.deployment || "")}</p>
-    <p class="muted small">Next review: ${esc(fmtDate(lt.next_rebalance))}</p>
-    <button class="btn primary" data-goto="longterm">Open portfolio plan</button></div>`;
-
-  html += trackMini();
+  html += `<div class="card small">This page shows the market only. For what to buy, see <b>Suggestions</b>.
+    <div class="btns"><button class="btn primary" data-tab="today">See today's suggestions</button></div></div>`;
   el.innerHTML = html;
 }
 
@@ -871,10 +851,6 @@ function renderMore() {
 function renderAdvanced() {
   const items = [
     ["plan", "📋", "Daily plan", "Buy / sell / hold list followed by the app"],
-    ["invest", "🌱", "Long-term investing", "Strong companies to hold for years"],
-    ["ideas", "💡", "All buy ideas", "Every idea, including riskier ones"],
-    ["swing", "📈", "All stock ideas (detailed)", "Charts, technical numbers, news"],
-    ["longterm", "🧾", "Long-term details", "Company numbers for each stock"],
     ["market", "🌐", "Market details", "Nifty chart and market health"],
     ["marketnews", "📰", "Market news", "General headlines"],
   ];
