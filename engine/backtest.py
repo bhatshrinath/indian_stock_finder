@@ -161,6 +161,65 @@ def _stats(df: pd.DataFrame) -> dict:
     }
 
 
+# ======================================================================= investor's real setup
+def portfolio_sim(f: Features, strat: SwingStrategy, money: float, slots: int = 1, per_day: int = 1,
+                  idle_yield: float = 0.0) -> dict:
+    """Simulate the investor's actual account: `money` split into `slots` trades,
+    at most `per_day` new trades a day, whole shares only, the strongest stock
+    (relative strength) first when several qualify, real costs including the
+    fixed depository charge. Same selection rule as the live system."""
+    _prep_numpy(f)
+    sig, stop = strat.signal_fn(f)
+    S, ST = sig.to_numpy(dtype=bool), stop.to_numpy(dtype=float)
+    rank = f.rs_rank.to_numpy(dtype=float)
+    per = money / slots
+    dates = f.close.index
+    open_exits, rows, busy = [], [], 0.0
+    for i in range(S.shape[0] - 1):
+        e = i + 1
+        open_exits = [x for x in open_exits if x >= e]
+        free = min(slots - len(open_exits), per_day)
+        if free <= 0 or not S[i].any():
+            continue
+        for c in sorted(np.flatnonzero(S[i]), key=lambda c: -np.nan_to_num(rank[i, c])):
+            if free <= 0:
+                break
+            t = simulate_trade(f, strat, c, i, ST[i, c])
+            if t is None or t.get("open"):
+                continue
+            qty = int(per // (f._np["close"][i, c] * (1 + strat.max_gap_up)))
+            if qty < 1:
+                continue
+            gain = qty * (t["exit"] - t["entry"]) - qty * t["entry"] * config.BASE_COST - config.DP_CHARGE_RS
+            rows.append({"exit_date": dates[t["exit_i"]], "gain": gain})
+            busy += (t["exit_i"] - t["entry_i"] + 1) * qty * t["entry"]
+            open_exits.append(t["exit_i"])
+            free -= 1
+    if not rows:
+        return {"trades": 0, "money": money, "slots": slots}
+    df = pd.DataFrame(rows).sort_values("exit_date")
+    years = max((dates[-1] - dates[0]).days / 365.25, 0.1)
+    invested_frac = busy / len(dates) / money
+    idle_income = idle_yield * years * money * max(0.0, 1 - invested_frac)
+    total = float(df.gain.sum())
+    eq = pd.concat([pd.Series([money]), df.groupby("exit_date")["gain"].sum().cumsum() + money],
+                   ignore_index=True)
+    wins = df.gain > 0
+    return {
+        "money": money, "slots": slots, "years": round(years, 1), "trades": int(len(df)),
+        "trades_per_year": round(len(df) / years, 1), "win_rate": round(100 * float(wins.mean()), 1),
+        "total_profit": round(total), "per_year_profit": round(total / years),
+        "cagr_pct": round(100 * ((1 + total / money) ** (1 / years) - 1), 1),
+        "worst_drop_pct": round(float((eq / eq.cummax() - 1).min() * 100), 1),
+        "worst_drop_rs": round(float((eq - eq.cummax()).min())),
+        "avg_win_rs": round(float(df.gain[wins].mean())) if wins.any() else 0,
+        "avg_loss_rs": round(float(df.gain[~wins].mean())) if (~wins).any() else 0,
+        "invested_pct_of_time": round(100 * invested_frac), "idle_income": round(idle_income),
+        "yearly": [{"year": int(y), "profit": round(float(v))}
+                   for y, v in df.groupby(df.exit_date.dt.year)["gain"].sum().items()],
+    }
+
+
 # ======================================================================= long-term
 def backtest_momentum(f: Features, industries: dict[str, str], n: int = config.LT_PORTFOLIO_SIZE,
                       trend_guard: bool = False) -> dict:

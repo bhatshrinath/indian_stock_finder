@@ -329,6 +329,15 @@ def run_full(args) -> None:
             log.info("backtest %-10s %s (%.1fs)", st.key,
                      {k: bt[st.key].get(k) for k in ("trades", "win_rate", "avg_return", "profit_factor")},
                      time.time() - t1)
+        # the investor's real account, for each safe method (shown on the Results screen)
+        for st in SWING_STRATEGIES:
+            if st.key in config.SAFE_STRATEGIES:
+                bt[st.key]["portfolio"] = backtest.portfolio_sim(
+                    f, st, money=config.TRADE_AMOUNT * config.MAX_OPEN_TRADES, slots=config.MAX_OPEN_TRADES,
+                    per_day=config.MAX_NEW_PER_DAY)
+                log.info("portfolio sim %s: %s", st.key,
+                         {k: bt[st.key]["portfolio"].get(k) for k in ("trades", "win_rate", "total_profit",
+                                                                    "per_year_profit", "worst_drop_pct")})
         inds = dict(zip(uni.symbol, uni.industry))
         lt = backtest.backtest_momentum(f, inds)
         lt_guard = backtest.backtest_momentum(f, inds, trend_guard=True)
@@ -394,6 +403,8 @@ def run_full(args) -> None:
                  and mkt["regime"] >= 1 and not pk["red_flags"] and pk.get("news_sentiment", 0) > -0.3
                  and not any("loss-making" in w for w in pk.get("warnings", []))
                  and pk["max_entry"] <= config.TRADE_AMOUNT and pk["symbol"] not in held]
+        # strongest stock first: the exact rule validated in the portfolio simulation
+        cands.sort(key=lambda pk: -(pk.get("rs_percentile") or 0))
         slots = max(0, config.MAX_OPEN_TRADES - len(active))
         actionable = cands[: min(slots, config.MAX_NEW_PER_DAY)]
     else:
@@ -443,7 +454,8 @@ def run_full(args) -> None:
                             "stats": {s: bt.get(k, {}).get(s) for s in
                                       ("trades", "win_rate", "avg_return", "avg_win", "avg_loss",
                                        "profit_factor", "avg_days", "max_losing_streak")},
-                            "last_12m": bt.get(k, {}).get("last_12m")}
+                            "last_12m": bt.get(k, {}).get("last_12m"),
+                            "portfolio": bt.get(k, {}).get("portfolio")}
                         for k, (ok, why) in safe.items()},
         },
         # stocks to sell at the next open (exit signal at the close, or exit level hit today)

@@ -210,3 +210,4 @@ dialog .card { border: 0; box-shadow: none; padding: 0; }
 .headline { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; border-left: 6px solid var(--brand); }
 .headline.calm { border-left-color: var(--up); background: var(--up-bg); }
 .preset-row.three { grid-template-columns: repeat(3, 1fr); }
+.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); margin: 2px 0; font-size: 13px; }

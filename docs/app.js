@@ -464,6 +464,18 @@ function openLtInfo(sym) {
 // ------------------------------------------------------------------ RESULTS
 const working = (s) => s.trades >= 30 && s.avg_return > 0 && s.profit_factor >= 1.1; // same rule as the engine
 
+function rupeePicture(pf) {
+  const tot = pf.total_profit;
+  const yrs = (pf.yearly || []).map((y) => `<span class="chip ${tone(y.profit)}">${y.year}: ${y.profit >= 0 ? "+" : "−"}${inr(Math.abs(y.profit))}</span>`).join(" ");
+  return `<div class="callout info small" style="margin-top:8px">
+    <b>With ${inr(pf.money)}, ${pf.slots === 1 ? "one trade at a time" : pf.slots + " trades at a time"}, over the last ${pf.years} years:</b>
+    ${num(pf.trades, 0)} trades (about ${num(pf.trades_per_year, 0)} a year), ${outOf10(pf.win_rate)} out of 10 made money.
+    Total <b class="${tone(tot)}">${tot >= 0 ? "+" : "−"}${inr(Math.abs(tot))}</b> (about ${inr(pf.per_year_profit)} a year, after all charges).
+    The worst dip along the way was about <b class="down">${inr(Math.abs(pf.worst_drop_rs))}</b> (${pct(pf.worst_drop_pct)}).
+    <div style="margin-top:6px">${yrs}</div>
+    <div class="muted" style="margin-top:6px">The money was in a trade only about ${pf.invested_pct_of_time}% of the time.</div></div>`;
+}
+
 function renderRecord() {
   const el = $("#tab-record");
   const L = S.latest;
@@ -479,7 +491,8 @@ function renderRecord() {
   const safeLines = safeInfo.map(([k, m]) => `<li><b>${esc(m.name || k)}</b>, the only method used for the daily plan:
       made money <b>${outOf10(m.stats?.win_rate) ?? "–"} out of 10</b> times in ${num(m.stats?.trades, 0)} past trades,
       averaging <span class="${tone(m.stats?.avg_return)}">${pct(m.stats?.avg_return, 2)}</span> per trade after costs.
-      ${m.ok ? "✅ Passes every safety check." : `⏸ Paused: ${esc(m.why)}.`}</li>`).join("");
+      ${m.ok ? "✅ Passes every safety check." : `⏸ Paused: ${esc(m.why)}.`}
+      ${m.portfolio && m.portfolio.trades ? rupeePicture(m.portfolio) : ""}</li>`).join("");
   const simple = Object.entries(bt.swing || {}).filter(([k, v]) => v.trades && !safeKeys.has(k)).map(([k, v]) => {
     const n = outOf10(v.win_rate);
     const name = (SIMPLE[k] || {}).title || v.name || k;
@@ -559,7 +572,7 @@ function renderSettings() {
   const perm = "Notification" in window ? Notification.permission : "unsupported";
   el.innerHTML = `<h2>My money settings</h2>
     <div class="card">
-      <label class="field">Money for trading (₹)<span class="hint">Used for the daily plan. It is split into ${S.latest?.safe?.max_open_trades || 2} parts (at most ${S.latest?.safe?.max_open_trades || 2} trades at once). Suggested: ₹10,000 to ₹20,000.</span>
+      <label class="field">Money for trading (₹)<span class="hint">Used for the daily plan: ${slotsText()}. Suggested: ₹20,000. Below ₹15,000, fixed broker charges take most of the profit.</span>
         <input id="s-money" type="number" inputmode="numeric" min="2000" step="1000" value="${st.tradeMoney}"></label>
       <div class="btns"><button class="btn primary" id="s-money-save">Save</button></div>
     </div>
@@ -877,7 +890,14 @@ function setupHelp() {
 // press anything: this screen simply says SELL / BUY / HOLD for his amount.
 
 const tradeMoney = () => settings().tradeMoney;
-const perTrade = () => tradeMoney() / (S.latest?.safe?.max_open_trades || 2);
+const slotsN = () => S.latest?.safe?.max_open_trades || 1;
+const perTrade = () => tradeMoney() / slotsN();
+const slotsText = () => (slotsN() === 1 ? "one trade at a time" : `at most ${slotsN()} trades at a time`);
+// fixed broker charges (about Rs 16 per sell) eat most of the profit on small trades
+const SMALL_AMOUNT = 15000;
+const smallAmountWarning = () => (perTrade() < SMALL_AMOUNT
+  ? `<div class="callout warn small">With less than ${inr(SMALL_AMOUNT)} per trade, fixed broker charges take most of the profit.
+     ${inr(20000)} works much better.</div>` : "");
 const moneyIsSet = () => !!(store.get(LS.settings, {}) || {}).tradeMoney;
 
 // India time from the phone clock (getUTC* fields of this Date hold IST wall time)
@@ -905,8 +925,8 @@ function planWelcome() {
     <div class="preset-row three">${presets.map((v) => `<button class="btn" data-money="${v}">${inr(v)}</button>`).join("")}</div>
     <label class="field">Or type an amount (₹)<input id="w-money" type="number" inputmode="numeric" min="2000" step="1000" placeholder="e.g. 12000"></label>
     <button class="btn primary wide" id="w-money-save">Save</button>
-    <p class="small muted">The app splits it into 2 parts, so at most 2 trades run at once, each using about half.
-      Use only money you won't need for daily life.</p>
+    <p class="small muted">The app uses it for ${slotsText()}. ${inr(20000)} works best: below about ${inr(SMALL_AMOUNT)},
+      fixed broker charges take most of the profit. Use only money you won't need for daily life.</p>
   </div>`;
 }
 
@@ -1042,6 +1062,7 @@ function renderPlan() {
   let html = "";
   if (L.demo) html += `<div class="callout bad">Practice data only.</div>`;
   if (!moneyIsSet()) html += planWelcome();
+  else html += smallAmountWarning();
   html += `<p class="hello">${greeting()}! <span class="muted">${esc(dateTxt)}</span></p>`;
   if (todo) html += `<div class="card headline"><div class="mood-title">${todo} thing${todo > 1 ? "s" : ""} to do</div>
       <div class="small muted">Do it in your broker app (Zerodha, Groww…). Nothing to press here.</div></div>`;
@@ -1050,7 +1071,7 @@ function renderPlan() {
   html += now.join("") + sells.join("") + buys.join("") + holds.join("");
   html += `<div class="card small">
       <div class="line"><span class="ic">🛡</span><div><b>Safe mode:</b> only India's 50 biggest companies, only when the past record is strong,
-        at most ${safe.max_open_trades || 2} trades at a time, about ${inr(perTrade())} each.</div></div>
+        ${slotsText()}, about ${inr(perTrade())}${slotsN() > 1 ? " each" : ""}.</div></div>
       ${paused ? `<div class="line"><span class="ic">⏸</span><div><b>New buying is paused.</b> ${esc(methods[0].why)}.</div></div>` : ""}
       ${safe.enabled && L.market?.regime !== 2
         ? `<div class="line"><span class="ic">${mood.icon}</span><div>The safe method buys only when the whole market is rising.

@@ -42,61 +42,18 @@ def variants():
 
 
 def portfolio_sim(f, rule, stop_atr, hold, money=20000.0, slots=2, per_day=1, idle_yield=0.0):
-    """The investor's real setup: Rs 20,000, at most 2 trades open, 1 new per day,
-    about Rs 10,000 per trade, whole shares only."""
-    import numpy as np
     strat = SwingStrategy(key="sim", name="sim", plain_english="", how_to_exit="",
                           signal_fn=lambda f: (rule(f).fillna(False), f.close - stop_atr * f.atr14),
                           target_r=None, max_hold=hold, exit_above_sma5=True)
-    backtest._prep_numpy(f)
-    sig, stop = strat.signal_fn(f)
-    S, ST = sig.to_numpy(bool), stop.to_numpy(float)
-    rank = f.rs_rank.to_numpy(float)
-    per = money / slots
-    open_exits, pnl, taken, wins, busy = [], [], 0, 0, []
-    dates = f.close.index
-    curve = {}
-    for i in range(S.shape[0] - 1):
-        e = i + 1
-        open_exits = [x for x in open_exits if x >= e]
-        free = min(slots - len(open_exits), per_day)
-        if free <= 0 or not S[i].any():
-            continue
-        cols = sorted(np.flatnonzero(S[i]), key=lambda c: -np.nan_to_num(rank[i, c]))
-        for c in cols:
-            if free <= 0:
-                break
-            t = backtest.simulate_trade(f, strat, c, i, ST[i, c])
-            if t is None or t.get("open"):
-                continue
-            qty = int(per // (f._np["close"][i, c] * 1.02))
-            if qty < 1:
-                continue
-            gain = qty * (t["exit"] - t["entry"]) - qty * t["entry"] * config.BASE_COST - config.DP_CHARGE_RS
-            busy.append((t["exit_i"] - t["entry_i"] + 1) * qty * t["entry"])
-            pnl.append(gain)
-            taken += 1
-            wins += gain > 0
-            curve[dates[t["exit_i"]]] = curve.get(dates[t["exit_i"]], 0) + gain
-            open_exits.append(t["exit_i"])
-            free -= 1
-    if not pnl:
+    r = backtest.portfolio_sim(f, strat, money=money, slots=slots, per_day=per_day, idle_yield=idle_yield)
+    if not r.get("trades"):
         return "no trades"
-    eq = pd.Series(curve).sort_index().cumsum() + money
-    dd = float((eq / eq.cummax() - 1).min() * 100)
-    years = (dates[-1] - dates[0]).days / 365.25
-    total = sum(pnl)
-    # money not in a trade can sit in a liquid fund / ETF earning idle_yield
-    avg_invested = sum(busy) / len(dates)
-    idle_income = idle_yield * years * max(0.0, money - avg_invested)
-    total += idle_income
-    yearly = pd.Series(curve).groupby(lambda d: d.year).sum()
-    return (f"{taken} trades ({taken / years:.0f}/yr), won {100 * wins / taken:.0f}%, "
-            f"in trades {100 * avg_invested / money:.0f}% of the time, idle income Rs {idle_income:,.0f}, "
-            f"total profit Rs {total:,.0f} "
-            f"on Rs {money:,.0f} ({100 * ((1 + total / money) ** (1 / years) - 1):.1f}%/yr), worst drop {dd:.1f}%, "
-            f"avg win Rs {np.mean([x for x in pnl if x > 0]):,.0f}, avg loss Rs {np.mean([x for x in pnl if x <= 0]):,.0f}; "
-            "by year: " + ", ".join(f"{y}: Rs {v:,.0f}" for y, v in yearly.items()))
+    total = r["total_profit"] + r["idle_income"]
+    return (f"{r['trades']} trades ({r['trades_per_year']:.0f}/yr), won {r['win_rate']:.0f}%, "
+            f"in trades {r['invested_pct_of_time']}% of the time, idle income Rs {r['idle_income']:,}, "
+            f"total Rs {total:,} on Rs {money:,.0f}, worst drop {r['worst_drop_pct']}%, "
+            f"avg win Rs {r['avg_win_rs']}, avg loss Rs {r['avg_loss_rs']}; by year: "
+            + ", ".join(f"{y['year']}: Rs {y['profit']:,}" for y in r["yearly"]))
 
 
 def main() -> None:

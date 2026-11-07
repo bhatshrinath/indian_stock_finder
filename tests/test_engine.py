@@ -204,3 +204,17 @@ def test_safe_dip_only_blue_chips():
     st = next(s for s in SWING_STRATEGIES if s.key == "safe_dip")
     sig = st.signal_fn(f)[0]
     assert not sig[SYMS[10:]].to_numpy().any()
+
+
+def test_portfolio_sim_respects_slots_and_costs():
+    f = Features(random_walk_prices(seed=13))
+    st = SWING_STRATEGIES[1]                                   # dip_buy: frequent signals
+    one = backtest.portfolio_sim(f, st, money=20000, slots=1)
+    two = backtest.portfolio_sim(f, st, money=20000, slots=2)
+    assert one["trades"] > 0 and two["trades"] >= one["trades"]
+    assert one["trades_per_year"] * one["years"] == pytest.approx(one["trades"], rel=0.05)
+    assert sum(y["profit"] for y in one["yearly"]) == pytest.approx(one["total_profit"], abs=len(one["yearly"]))
+    # one slot can never be invested more than 100% of the time
+    assert one["invested_pct_of_time"] <= 100
+    # on a random walk the account should not show a big profit (costs + no edge)
+    assert one["total_profit"] < 0.5 * 20000

@@ -4,7 +4,7 @@ A free, self-updating stock research app for NSE (Indian) stocks, built for a re
 **clear, rule-based ideas** instead of tips and noise. It runs entirely on GitHub (no server, no cost) and
 works on phone and laptop. You can install it on a phone's home screen like an app.
 
-**Made for a very cautious, non-expert investor with a small amount (₹10,000–20,000).**
+**Made for a very cautious, non-expert investor with a small amount (₹20,000 suggested).**
 Nothing to press: the **Today** screen and a phone message simply say what to do at the next market open:
 🔴 **SELL** · 🛒 **BUY** (how many shares, the most to pay, the most you could lose) · ✋ **HOLD**, or
 **"Nothing to do today"**, which is the most common answer. Three big buttons: **Today**, **Results**, **More**.
@@ -15,12 +15,26 @@ Nothing to press: the **Today** screen and a phone message simply say what to do
 | Only **Nifty 50** companies (India's 50 largest), calmer than average, in rising long-term trends | No small or risky stocks |
 | Only **one method**: buying a short dip in such a company, and **only while the whole market is rising** | On 5 years of real data: made money in **66%** of 476 trades, gains 1.5× losses, still profitable over the last 12 months |
 | A **safety gate**: the method is used only while its own 5-year record shows ≥40 trades, ≥60% winners, gains ≥1.2× losses, and no loss over the last 12 months | If it stops working, the app pauses buying by itself |
-| At most **2 trades at a time**, 1 new per day, about half the money each, whole shares only, no stock with bad news | Small, spread-out risk; a typical loss is a couple of hundred rupees |
+| **One trade at a time** with the whole amount, whole shares only, the strongest qualifying stock first, no stock with bad news | On real data, 1 × ₹20,000 earned about 7× more than 2 × ₹10,000 (fixed broker charges hurt small trades), with a smaller worst dip |
 | Every trade has a **safety sell price**, with a phone alert the moment it's reached, even on the day of buying | Losses stay small |
 
 Typical trade: bought at 9:15 AM, sold within about 5 days. No method is ever 100% sure. Expect some losing trades;
 the edge comes from many small, controlled trades. To switch safe mode off (all ideas), add the repository variable `SAFE_MODE` = `off`.
-The share counts in phone messages use `TRADE_AMOUNT` (default ₹10,000 per trade; change it with a repository variable).
+The share counts in phone messages use `TRADE_AMOUNT` (default ₹20,000; set the repository variable to his real amount).
+
+### Honest expectations with ₹20,000 (5 years of real prices, after all charges)
+| | |
+|---|---|
+| Trades | about 20 a year (one at a time, usually sold within ~5 days) |
+| Made money | about 65 out of 100 trades |
+| Total profit | about **₹3,800 in 5 years** (≈ ₹760 a year, ≈ 3.5% a year); one year was +₹4,300, two years were slightly negative |
+| Worst dip along the way | about ₹2,000 (≈ 10%); the Nifty itself fell more |
+| Money actually in a trade | only ~30% of the time |
+
+That is **low risk but modest profit**, less than a fixed deposit on its own. Keeping the idle money in a liquid fund or liquid ETF
+(for example LIQUIDBEES) and moving it only on buy days raised the total to about **7% a year** in the same test, at the cost of a few extra orders.
+Below about ₹15,000 the fixed broker charges take most of the profit (₹10,000 split into two trades lost money in the test), and the app warns about it.
+The live track record on the Results screen will show real results as they come in.
 
 **What it gives you every day**
 

@@ -63,10 +63,12 @@ SAFE_STRATEGIES = ("safe_dip",)
 SAFE_MIN_WIN_RATE = 60.0          # % of past trades that made money (after costs)
 SAFE_MIN_PROFIT_FACTOR = 1.2      # total gains / total losses in the backtest
 SAFE_MIN_TRADES = 40              # enough history to trust the numbers
-MAX_OPEN_TRADES = int(os.getenv("MAX_OPEN_TRADES") or 2)   # empty GitHub variable -> default
+# One trade at a time with the whole amount: on 5 years of real data, 1 x Rs 20,000 earned
+# ~7x more than 2 x Rs 10,000 (fixed charges hit small trades) with a smaller worst drop.
+MAX_OPEN_TRADES = int(os.getenv("MAX_OPEN_TRADES") or 1)   # empty GitHub variable -> default
 MAX_NEW_PER_DAY = 1
-# rupees per trade used in phone alerts (the app uses the amount set on the phone)
-TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT") or 10000)
+# rupees per trade used in phone alerts and simulations (the app uses the amount set on the phone)
+TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT") or 20000)
 # realistic total cost for a trade of TRADE_AMOUNT (percent costs + the fixed DP charge)
 ROUND_TRIP_COST = BASE_COST + DP_CHARGE_RS / TRADE_AMOUNT
 
