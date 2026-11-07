@@ -1,0 +1,49 @@
+name: Daily scan
+
+# After market close (NSE closes 15:30 IST). 12:45 UTC = 18:15 IST, Mon-Fri.
+on:
+  schedule:
+    - cron: "45 12 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: market-data
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    # Kill switch: set repository variable AUTO_RUN = off to stop all automatic runs
+    # (Settings -> Secrets and variables -> Actions -> Variables). Manual runs still work.
+    if: github.event_name == 'workflow_dispatch' || vars.AUTO_RUN != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run full scan, backtests and recommendations
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AI_NOTES: ${{ vars.AI_NOTES }}
+          APP_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+        run: python -m engine.run --mode full
+      - name: Publish data
+        run: |
+          git config user.name "stock-finder-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/data engine/nifty200_fallback.csv
+          git diff --cached --quiet && exit 0
+          git commit -m "data: daily scan $(date -u +%Y-%m-%d)"
+          for i in 1 2 3; do git pull --rebase -X theirs && git push && break; sleep 5; done

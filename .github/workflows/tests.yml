@@ -1,0 +1,24 @@
+name: Tests
+
+on:
+  push:
+    paths: ["engine/**", "tests/**", "docs/*.js", "requirements.txt"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q
+      - name: End-to-end run on synthetic data
+        run: python -m engine.run --mode full --demo --no-news
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --check docs/app.js && node --check docs/sw.js

@@ -1,0 +1,63 @@
+"""Central settings for the stock finder engine.
+
+Everything tunable lives here so strategies, backtests and the app stay in sync.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+ENGINE_DIR = ROOT / "engine"
+OUT_DIR = ROOT / "docs" / "data"          # published to GitHub Pages
+CACHE_DIR = ROOT / "data" / "cache"        # local only (gitignored)
+
+# ---------------------------------------------------------------- universe
+# Nifty 200 = large + mid caps: liquid enough that a retail order never moves
+# the price, and broad enough to find setups every week.
+UNIVERSE_URLS = [
+    "https://nsearchives.nseindia.com/content/indices/ind_nifty200list.csv",
+    "https://niftyindices.com/IndexConstituent/ind_nifty200list.csv",
+]
+UNIVERSE_FALLBACK = ENGINE_DIR / "nifty200_fallback.csv"
+INDEX_SYMBOL = "^NSEI"                     # Nifty 50 for regime / relative strength
+
+# ---------------------------------------------------------------- history
+HISTORY_PERIOD = "5y"                      # yfinance period for full runs
+BHAV_HISTORY_DAYS = int(os.getenv("BHAV_HISTORY_DAYS", "420"))  # NSE fallback depth
+
+# ---------------------------------------------------------------- trading costs
+# Delivery trades in India: STT 0.1% each side + exchange/SEBI/stamp/GST +
+# a discount-broker fee. ~0.30% round trip is a realistic, slightly
+# conservative figure. Every backtest number is AFTER this cost.
+ROUND_TRIP_COST = 0.003
+
+# ---------------------------------------------------------------- risk defaults
+# The app lets the user change these; they're only defaults.
+DEFAULT_CAPITAL = 500_000
+DEFAULT_RISK_PER_TRADE = 0.01              # risk 1% of swing capital per trade
+MAX_POSITION_PCT = 0.20                    # never more than 20% of swing capital in one stock
+
+# ---------------------------------------------------------------- long-term model
+LT_PORTFOLIO_SIZE = 15                     # number of stocks in the core portfolio
+LT_MIN_HISTORY = 260                       # trading days needed to score a stock
+
+# ---------------------------------------------------------------- swing filters
+MIN_PRICE = 50                             # avoid very low-priced stocks
+MIN_TURNOVER_CR = 10                       # min avg daily turnover (₹ crore, 20d)
+
+# ---------------------------------------------------------------- alerts/AI (optional)
+NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
+NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+SMTP_USER = os.getenv("GMAIL_USER", "").strip()
+SMTP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "").strip()
+ALERT_EMAIL_TO = os.getenv("ALERT_EMAIL_TO", "").strip()
+# Paid feature: needs BOTH the API key secret AND repository variable AI_NOTES=on.
+ANTHROPIC_API_KEY = (os.getenv("ANTHROPIC_API_KEY", "").strip()
+                     if os.getenv("AI_NOTES", "").strip().lower() == "on" else "")
+AI_MODEL = os.getenv("AI_MODEL", "claude-opus-5-5")
+APP_URL = os.getenv("APP_URL", "").strip()
+
+USER_AGENT = "indian-stock-finder/1.0 (+https://github.com/)"
