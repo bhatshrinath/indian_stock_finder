@@ -66,30 +66,45 @@ def load_yfinance(symbols: list[str], period: str = config.HISTORY_PERIOD) -> Pr
         return None
 
     tickers = [yahoo_ticker(s) for s in symbols] + [config.INDEX_SYMBOL]
-    frames = []
-    # chunked to be gentle with the endpoint and to survive partial failures
-    for i in range(0, len(tickers), 60):
-        chunk = tickers[i:i + 60]
-        for attempt in range(3):
-            try:
-                df = yf.download(chunk, period=period, interval="1d", auto_adjust=True,
-                                 group_by="column", progress=False, threads=True)
-                if df is not None and not df.empty:
-                    frames.append(df)
-                    break
-            except Exception as exc:
-                log.warning("yfinance chunk %d attempt %d failed: %s", i, attempt + 1, exc)
-            time.sleep(2 * (attempt + 1))
-    if not frames:
+
+    def download(per: str) -> pd.DataFrame | None:
+        frames = []
+        # chunked to be gentle with the endpoint and to survive partial failures
+        for i in range(0, len(tickers), 60):
+            chunk = tickers[i:i + 60]
+            for attempt in range(3):
+                try:
+                    df = yf.download(chunk, period=per, interval="1d", auto_adjust=True,
+                                     group_by="column", progress=False, threads=True)
+                    if df is not None and not df.empty:
+                        frames.append(df)
+                        break
+                except Exception as exc:
+                    log.warning("yfinance %s chunk %d attempt %d failed: %s", per, i, attempt + 1, exc)
+                time.sleep(2 * (attempt + 1))
+        if not frames:
+            return None
+        raw = pd.concat(frames, axis=1)
+        return raw.loc[:, ~raw.columns.duplicated()]
+
+    raw = download(period)
+    if raw is None:
         return None
-    raw = pd.concat(frames, axis=1)
-    raw = raw.loc[:, ~raw.columns.duplicated()]
+    # Yahoo's long-range download often leaves out the latest session for stocks
+    # (but not for the index). A short-range download includes it, so use it to
+    # fill the most recent days.
+    recent = download("1mo")
 
     def field_frame(name: str) -> pd.DataFrame:
-        f = raw[name].copy()
-        f.columns = [c.replace(".NS", "") for c in f.columns]
-        f.index = pd.to_datetime(f.index).tz_localize(None).normalize()
-        return f
+        def prep(r):
+            f = r[name].copy()
+            f.columns = [c.replace(".NS", "") for c in f.columns]
+            f.index = pd.to_datetime(f.index).tz_localize(None).normalize()
+            return f[~f.index.duplicated(keep="last")]
+        f = prep(raw)
+        if recent is not None and name in recent.columns.get_level_values(0):
+            f = f.combine_first(prep(recent))
+        return f.sort_index()
 
     close = field_frame("Close")
     if config.INDEX_SYMBOL not in close.columns or close[config.INDEX_SYMBOL].dropna().empty:
@@ -107,9 +122,27 @@ def load_yfinance(symbols: list[str], period: str = config.HISTORY_PERIOD) -> Pr
     idx_close, idx_high, idx_low = idx_close[valid], idx_high[valid], idx_low[valid]
 
     good = close.columns[close.notna().sum() > 60]
-    log.info("yfinance: %d symbols x %d days", len(good), len(close))
-    return Prices(o[good], h[good], l[good], close[good], v[good], idx_close,
-                  idx_high, idx_low, source="Yahoo Finance")
+    p = Prices(o[good], h[good], l[good], close[good], v[good], idx_close,
+               idx_high, idx_low, source="Yahoo Finance")
+    p = drop_incomplete_tail(p)
+    log.info("yfinance: %d symbols x %d days, last %s", len(good), len(p.close), p.last_date.date())
+    return p
+
+
+def drop_incomplete_tail(p: Prices, min_coverage: float = 0.6) -> Prices:
+    """Never base signals on a final day where most stocks have no price yet."""
+    cov = p.close.notna().mean(axis=1)
+    n = len(cov)
+    while n > 1 and cov.iloc[n - 1] < min_coverage:
+        n -= 1
+    if n < len(cov):
+        log.warning("Dropping %d incomplete trailing day(s) (coverage %.0f%%)",
+                    len(cov) - n, 100 * cov.iloc[-1])
+        cut = lambda x: x.iloc[:n] if x is not None else None
+        p = Prices(cut(p.open), cut(p.high), cut(p.low), cut(p.close), cut(p.volume),
+                   cut(p.index_close), cut(p.index_high), cut(p.index_low),
+                   p.delivery_pct, p.source, p.index_pe, p.index_pb)
+    return p
 
 
 def live_quotes(symbols: list[str]) -> dict[str, dict]:

@@ -37,6 +37,14 @@ def main() -> None:
     mis = part[(part > 0) & (part < len(tickers))]
     note(f"partial rows: {len(mis)}; sample: " + " | ".join(str(d) for d in mis.index[-6:]))
 
+    # the engine's own loader (with the latest-day fix) on a few stocks
+    from . import data
+    pr = data.load_yfinance(["RELIANCE", "TCS", "HDFCBANK", "INFY", "ITC"], period="1y")
+    if pr is not None:
+        cov = pr.close.notna().sum(axis=1).tail(3)
+        note(f"engine loader: last={pr.last_date.date()} index_last={pr.index_close.index[-1].date()} "
+             "coverage last 3: " + " | ".join(f"{d.date()}:{c}" for d, c in cov.items()))
+
 
 if __name__ == "__main__":
     main()

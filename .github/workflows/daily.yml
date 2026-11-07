@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: "45 12 * * 1-5"
   workflow_dispatch:
+  # also refresh the published data whenever the engine code changes
+  push:
+    branches: [main]
+    paths: ["engine/**", "requirements.txt"]
 
 permissions:
   contents: write

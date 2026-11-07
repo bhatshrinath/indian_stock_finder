@@ -113,3 +113,13 @@ def test_momentum_portfolio_respects_industry_cap():
     chosen = pick_portfolio(sc, inds, 10, max_per_industry=4)
     assert len(chosen) <= 8
     assert sum(inds[s] == "A" for s in chosen) <= 4
+
+
+def test_incomplete_last_day_is_dropped():
+    """Yahoo sometimes returns the index for the latest day but not the stocks."""
+    p = random_walk_prices(seed=10, days=300)
+    p.close.iloc[-1, :] = np.nan
+    out = data.drop_incomplete_tail(p)
+    assert len(out.close) == 299
+    assert out.close.iloc[-1].notna().all()
+    assert len(out.index_close) == 299
