@@ -211,6 +211,31 @@ def long_term_picks(f: Features, uni: pd.DataFrame, prev_holdings: list[str],
     return picks, changes
 
 
+def safe_long_term(f: Features, uni: pd.DataFrame, use_fundamentals: bool, n: int = 5) -> list[dict]:
+    """Long-term ideas for a very cautious investor: the strongest Nifty 50
+    companies by steady 6/12-month momentum, in an uptrend, with no debt,
+    loss or valuation warnings."""
+    names = dict(zip(uni.symbol, uni.name))
+    sc = momentum_scores(f)
+    if sc.empty:
+        return []
+    big = [s for s in sc.index if bool(f.large.get(s, False))][: n + 5]
+    funda = fundamentals.fetch(big) if use_fundamentals else {}
+    out = []
+    for s in big:
+        pts, warn = fundamentals.quality_check(funda.get(s, {}))
+        if warn:
+            continue
+        price = float(f.close[s].iloc[-1])
+        out.append({"symbol": s, "name": names.get(s, s), "kind": "long_term", "large": True, "price": r2(price),
+                    "review_below": r2(float(f.sma200[s].iloc[-1]) * 0.85),
+                    "ret_12m": r2(f.ret252[s].iloc[-1] * 100), "score": r2(sc.loc[s, "score"]),
+                    "fundamentals": funda.get(s, {})})
+        if len(out) >= n:
+            break
+    return out
+
+
 def deployment_plan(regime: int) -> str:
     return {
         2: "Market trend is up: invest the long-term amount in 2 equal parts, 2 weeks apart.",
@@ -372,6 +397,7 @@ def run_full(args) -> None:
     snaps = tr.get("portfolio_snapshots", [])
     prev = list(snaps[-1]["holdings"].keys()) if snaps else []
     lt_picks, changes = long_term_picks(f, uni, prev, use_fundamentals=not args.demo)
+    lt_safe = safe_long_term(f, uni, use_fundamentals=not args.demo)
 
     # ---- fundamentals for swing picks (light), news for everything shown
     if not args.demo and picks:
@@ -380,9 +406,9 @@ def run_full(args) -> None:
         for pk in picks:
             pts, warn = fundamentals.quality_check(fd.get(pk["symbol"], {}))
             pk.update(fundamentals=fd.get(pk["symbol"], {}), quality_pts=pts, warnings=warn)
-    names = {x["symbol"]: x["name"] for x in picks + lt_picks}
+    names = {x["symbol"]: x["name"] for x in picks + lt_picks + lt_safe}
     nw = news.news_for(names) if (names and not args.no_news) else {}
-    for x in picks + lt_picks:
+    for x in picks + lt_picks + lt_safe:
         n = nw.get(x["symbol"], {})
         x["news"] = n.get("items", [])
         x["news_sentiment"] = n.get("sentiment", 0.0)
@@ -446,6 +472,7 @@ def run_full(args) -> None:
                       "live_performance": perf, "size": config.LT_PORTFOLIO_SIZE},
         "open_trades": open_trades,
         "plan": plan,
+        "long_term_safe": [x for x in lt_safe if not x.get("red_flags")],
         "safe": {
             "enabled": config.SAFE_MODE, "trade_amount": config.TRADE_AMOUNT,
             "max_open_trades": config.MAX_OPEN_TRADES, "universe": "Nifty 50",

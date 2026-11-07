@@ -1106,7 +1106,7 @@ function suggestions() {
       horizon: "Short term · about 1 week", sellRule: "The app will tell you when to sell (usually within a week).",
       why: (SIMPLE[b.strategy] || {}).why, odds: outOf10(b.hist_win_rate), news: pk.news || [] });
   }
-  const lt = (L.long_term?.picks || []).filter((p) => p.large && !(p.warnings || []).length && !(p.red_flags || []).length
+  const lt = (L.long_term_safe || (L.long_term?.picks || []).filter((p) => p.large)).filter((p) => !(p.warnings || []).length && !(p.red_flags || []).length
     && p.price * 1.02 <= tradeMoney());               // only what his amount can buy
   for (const p of lt.slice(0, 3)) {
     out.push({ kind: "long_term", symbol: p.symbol, name: p.name, price: p.price, max_entry: +(p.price * 1.02).toFixed(2),
@@ -1189,7 +1189,7 @@ function renderRecoNews() {
   for (const x of suggestions()) syms.set(x.symbol, { name: x.name, news: x.news });
   for (const p of myPositions()) {
     if (syms.has(p.symbol)) continue;
-    const src = [...(L.swing || []), ...(L.long_term?.picks || [])].find((x) => x.symbol === p.symbol);
+    const src = [...(L.swing || []), ...(L.long_term_safe || []), ...(L.long_term?.picks || [])].find((x) => x.symbol === p.symbol);
     syms.set(p.symbol, { name: p.name || p.symbol, news: src?.news || [] });
   }
   const blocks = [...syms.entries()].map(([sym, v]) => `<div class="card"><h3>${esc(v.name)} <span class="muted small">${esc(sym)}</span></h3>
