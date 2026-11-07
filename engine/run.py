@@ -470,7 +470,9 @@ def run_full(args) -> None:
         # the app's actual long-term suggestions: Nifty 50 only, 4 stocks, one per sector
         # (price-based parts only; past business data and news are not available for a backtest)
         n50 = set(f.large[f.large].index)
-        lt_app = backtest.backtest_momentum(f, inds, n=4, universe=n50, max_per_industry=1)
+        # tested recipe: 1/3 Nifty 50 index fund + 3 stocks (one per sector) + full market guard
+        lt_app = backtest.backtest_momentum(f, inds, n=3, universe=n50, max_per_industry=1,
+                                            index_weight=1 / 3, trend_guard=True, guard_frac=1.0)
         log.info("backtest app long-term (N50, 4 stocks): cagr %s, worst %s", lt_app.get("cagr"), lt_app.get("max_drawdown"))
         log.info("backtest momentum cagr %s vs nifty %s, guarded %s", lt.get("cagr"),
                  lt.get("bench_cagr"), lt_guard.get("cagr"))

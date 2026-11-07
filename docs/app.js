@@ -548,7 +548,8 @@ function renderRecord() {
   const ap = bt.long_term_app || {};
   if (ap.curve) {
     html += `<h2>Test: the app's long-term suggestions</h2><div class="card">
-      <p class="small">Nifty 50 companies only, 4 at a time from different sectors, checked monthly, over the last ${ap.years} years.
+      <p class="small">About a third in the Nifty 50 index fund, the rest in 3 strong Nifty 50 companies from different sectors, checked monthly.
+        Everything is sold while the whole market is falling. Over the last ${ap.years} years.
         (Only the price checks can be tested on the past. The business and news checks are added live.)</p>
       ${lineChart(ap.curve)}
       <div class="table-wrap"><table><thead><tr><th></th><th class="num">Per year</th><th class="num">Worst fall</th><th class="num">Months beating Nifty</th></tr></thead><tbody>
@@ -693,6 +694,12 @@ function positionStatus(p) {
     st = { cls: "good", icon: "🎉", head: "BOOK PROFIT", text: `It reached the goal price (${px(p.target)}). Sell now to lock in your profit.` };
   else if (sell && p.kind !== "long_term")
     st = { cls: "good", icon: "💰", head: "SELL at 9:15 AM", text: "The plan says this trade is finished. Sell when the market opens." };
+  else if (p.kind === "long_term" && (L.market?.regime ?? 1) === 0 && !p.symbol.endsWith("GOLDBEES"))
+    st = { cls: "warn", icon: "🛡", head: "SELL (market falling)", text: "The whole market has turned down. Sell and keep the money safe. The app will suggest when to buy again." };
+  else if (p.kind === "long_term" && p.symbol !== "NIFTYBEES" && p.symbol !== "GOLDBEES"
+           && (Date.now() - new Date(p.date).getTime()) / 864e5 >= 28
+           && !(L.long_term_safe || []).slice(0, 6).some((x) => x.symbol === p.symbol))
+    st = { cls: "warn", icon: "🔁", head: "SELL (monthly check)", text: "It is no longer among the strongest. Sell it and buy the new suggestion instead." };
   else if (removed)
     st = { cls: "warn", icon: "🔁", head: "SELL (monthly change)", text: "This stock has left the long-term list. Sell it and use the money for the new stocks in Invest." };
   else if (p.kind === "swing" && p.sellBy && new Date().toISOString().slice(0, 10) > p.sellBy)
@@ -1145,6 +1152,8 @@ function basket() {
   const L = S.latest || {};
   const M = tradeMoney();
   const nHold = M < 3000 ? 1 : M < 6000 ? 2 : M < 12000 ? 3 : 4;
+  // market guard (tested): when the whole market is falling, buy nothing
+  if ((L.market?.regime ?? 1) === 0) return [];
   const large = L.long_term_safe || [];
   const mids = L.mid_safe || [];
   const funds = L.funds || [];
@@ -1153,7 +1162,9 @@ function basket() {
   const swing = (L.plan?.buy || [])[0];
   const order = [];
   if (swing && M >= MIN_SHORT_TERM) order.push({ ...swing, _swing: true });
-  order.push(large[0], idx, large[1], gold, mids[0], large[2], large[3], large[4]);
+  // tested recipe: Nifty 50 index fund + up to 3 strong companies from different sectors
+  order.push(idx, large[0], large[1], mids[0] || large[2], large[2], large[3], large[4]);
+  void gold;                                           // gold is not part of the tested recipe
   const seenInd = new Set();
   const cand = order.filter(Boolean).filter((x) => {
     const ind = x.industry || x.symbol;
@@ -1161,10 +1172,14 @@ function basket() {
     seenInd.add(ind);
     return true;
   });
-  let per = M / nHold;
-  let chosen = cand.filter((x) => (x.max_entry || x.price * 1.02) <= per).slice(0, nHold);
-  if (chosen.length && chosen.length < nHold) per = M / chosen.length;
+  // index fund gets about a third (half when only 2 holdings); stocks share the rest
+  const idxShare = nHold <= 1 ? 1 : nHold === 2 ? 0.5 : 1 / 3;
+  const stockN = Math.max(1, nHold - (idx ? 1 : 0));
+  const perStock = idx ? (M * (1 - idxShare)) / stockN : M / nHold;
+  const amountFor = (x) => (x.symbol === "NIFTYBEES" ? M * idxShare : perStock);
+  let chosen = cand.filter((x) => (x.max_entry || x.price * 1.02) <= amountFor(x)).slice(0, nHold);
   const items = chosen.map((x) => {
+    const per = amountFor(x);
     const isFund = x.size === "fund";
     const tag = x._swing ? "Short term · about 1 week"
       : isFund ? "Long term · hold for months" : "Long term · 6 to 12 months";
@@ -1188,6 +1203,9 @@ function basket() {
   });
   // whole shares leave money unused: add extra shares where they fit,
   // cheapest first, never letting one holding exceed half of the money
+  if (items.length && items.length < nHold) {        // fewer affordable holdings: spread the money over them
+    for (const it of items) it.amount = M / items.length;
+  }
   for (const it of items) it.qty = Math.floor(it.amount / it.max_entry);
   let left = M - items.reduce((a, it) => a + it.qty * it.max_entry, 0);
   for (let guard = 0; guard < 500; guard++) {
