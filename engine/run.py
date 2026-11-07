@@ -342,7 +342,8 @@ def run_full(args) -> None:
                 "Universe is today's Nifty 200, so the past excludes stocks that later dropped out "
                 "(survivorship bias). Real results will likely be somewhat lower.",
                 "Swing trades: entry at next day's open, skipped if it gaps up >2%; stop checked "
-                "before target on the same day; ~0.3% round-trip costs deducted.",
+                f"before target on the same day; {config.ROUND_TRIP_COST * 100:.2f}% round-trip costs deducted "
+                f"(0.30% + a Rs {config.DP_CHARGE_RS:.0f} depository charge on a Rs {config.TRADE_AMOUNT:,.0f} trade).",
                 "Long-term: monthly rebalance of the top-15 momentum stocks, max 4 per industry.",
             ]})
     else:

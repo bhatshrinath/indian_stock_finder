@@ -4,9 +4,23 @@ A free, self-updating stock research app for NSE (Indian) stocks, built for a re
 **clear, rule-based ideas** instead of tips and noise. It runs entirely on GitHub (no server, no cost) and
 works on phone and laptop. You can install it on a phone's home screen like an app.
 
-**Made for everyday use by a non-expert.** Four big buttons:
-**Today** (what to buy, how many shares, the most you can lose), **My Stocks** (HOLD / SELL NOW / BOOK PROFIT
-for everything you bought), **Invest** (the long-term list with share counts) and **More** (help, results, all details).
+**Made for a very cautious, non-expert investor with a small amount (₹10,000–20,000).**
+Nothing to press: the **Today** screen and a phone message simply say what to do at the next market open:
+🔴 **SELL** · 🛒 **BUY** (how many shares, the most to pay, the most you could lose) · ✋ **HOLD**, or
+**"Nothing to do today"**, which is the most common answer. Three big buttons: **Today**, **Results**, **More**.
+
+### Safe mode (on by default)
+| Rule | Why |
+|---|---|
+| Only **Nifty 50** companies (India's 50 largest), calmer than average, in rising long-term trends | No small or risky stocks |
+| Only **one method**: buying a short dip in such a company, and **only while the whole market is rising** | On 5 years of real data: made money in **66%** of 476 trades, gains 1.5× losses, still profitable over the last 12 months |
+| A **safety gate**: the method is used only while its own 5-year record shows ≥40 trades, ≥60% winners, gains ≥1.2× losses, and no loss over the last 12 months | If it stops working, the app pauses buying by itself |
+| At most **2 trades at a time**, 1 new per day, about half the money each, whole shares only, no stock with bad news | Small, spread-out risk; a typical loss is a couple of hundred rupees |
+| Every trade has a **safety sell price**, with a phone alert the moment it's reached, even on the day of buying | Losses stay small |
+
+Typical trade: bought at 9:15 AM, sold within about 5 days. No method is ever 100% sure. Expect some losing trades;
+the edge comes from many small, controlled trades. To switch safe mode off (all ideas), add the repository variable `SAFE_MODE` = `off`.
+The share counts in phone messages use `TRADE_AMOUNT` (default ₹10,000 per trade; change it with a repository variable).
 
 **What it gives you every day**
 
@@ -128,6 +142,7 @@ Safety nets:
 
 ## Using it sensibly (please read)
 
+* **Follow the plan exactly.** Buy only up to the price shown, and sell when the app says SELL. If you skip a buy, just ignore that stock's later messages.
 * **Follow the stop-loss every time.** Place it in your broker app right after buying (a GTT/stop order). This is what keeps losses small.
 * **Expect losing streaks.** The Results tab shows each setup's worst historical streak. Risking 1% per trade means even 10 losses in a row cost only ~10% of swing money.
 * **No trade is a valid answer.** On many days, and in bear markets, the app suggests nothing. That is a feature.

@@ -29,8 +29,12 @@ BHAV_HISTORY_DAYS = int(os.getenv("BHAV_HISTORY_DAYS", "420"))  # NSE fallback d
 # ---------------------------------------------------------------- trading costs
 # Delivery trades in India: STT 0.1% each side + exchange/SEBI/stamp/GST +
 # a discount-broker fee. ~0.30% round trip is a realistic, slightly
-# conservative figure. Every backtest number is AFTER this cost.
-ROUND_TRIP_COST = 0.003
+# conservative figure. Every backtest number is AFTER these costs.
+BASE_COST = 0.003
+# Fixed depository (DP) charge on every sell day (e.g. Zerodha Rs 13.5 + GST).
+# Small trades feel this: on Rs 10,000 it is another ~0.16%.
+DP_CHARGE_RS = float(os.getenv("DP_CHARGE_RS") or 15.93)
+ROUND_TRIP_COST = BASE_COST                # final value set below, once TRADE_AMOUNT is known
 
 # ---------------------------------------------------------------- risk defaults
 # The app lets the user change these; they're only defaults.
@@ -59,10 +63,12 @@ SAFE_STRATEGIES = ("safe_dip",)
 SAFE_MIN_WIN_RATE = 60.0          # % of past trades that made money (after costs)
 SAFE_MIN_PROFIT_FACTOR = 1.2      # total gains / total losses in the backtest
 SAFE_MIN_TRADES = 40              # enough history to trust the numbers
-MAX_OPEN_TRADES = int(os.getenv("MAX_OPEN_TRADES", "2"))
+MAX_OPEN_TRADES = int(os.getenv("MAX_OPEN_TRADES") or 2)   # empty GitHub variable -> default
 MAX_NEW_PER_DAY = 1
 # rupees per trade used in phone alerts (the app uses the amount set on the phone)
-TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", "10000") or 10000)
+TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT") or 10000)
+# realistic total cost for a trade of TRADE_AMOUNT (percent costs + the fixed DP charge)
+ROUND_TRIP_COST = BASE_COST + DP_CHARGE_RS / TRADE_AMOUNT
 
 # ---------------------------------------------------------------- alerts/AI (optional)
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()

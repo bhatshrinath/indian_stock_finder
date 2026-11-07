@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from . import backtest, data
+from . import backtest, config, data
 from .strategies import Features, SwingStrategy
 from .universe import load_nifty50, load_universe
 
@@ -28,29 +28,20 @@ def variants():
     bull = lambda f: f.broadcast(f.regime == 2)
     return [
         # --- round 2: neighbours of the best round-1 variant (market must be rising)
-        ("B1 V1+bull", lambda f: base(f) & bull(f), 2.5, 10),
-        ("B2 V3(lowvol)+bull", lambda f: base(f) & (f.vol252 < 0.30) & bull(f), 2.5, 10),
         ("B3 SAFE+bull", lambda f: safe(f) & bull(f), 2.5, 10),
         ("B4 B3 stop2ATR", lambda f: safe(f) & bull(f), 2.0, 10),
         ("B5 B3 hold5", lambda f: safe(f) & bull(f), 2.5, 5),
-        ("B6 B3+rsi2<5", lambda f: safe(f) & bull(f) & (f.rsi2 < 5), 2.5, 10),
         # --- round 1
         # name, signal rule, stop in ATRs, max hold days
         ("V1 N50 rsi2<10", base, 2.5, 10),
-        ("V2 V1+rsi2<5", lambda f: base(f) & (f.rsi2 < 5), 2.5, 10),
-        ("V3 V1+lowvol", lambda f: base(f) & (f.vol252 < 0.30), 2.5, 10),
         ("V4 SAFE(current)", safe, 2.5, 10),
         ("V5 SAFE+bull only", lambda f: safe(f) & f.broadcast(f.regime == 2), 2.5, 10),
-        ("V6 SAFE stop3ATR", safe, 3.0, 10),
-        ("V7 SAFE stop2ATR", safe, 2.0, 10),
-        ("V8 SAFE hold5", safe, 2.5, 5),
-        ("V9 SAFE+2 down days", lambda f: safe(f) & two_down(f), 2.5, 10),
         ("V10 N200 dip (ref)", lambda f: f.uptrend & f.liquid & f.broadcast(f.regime_ok) & (f.rsi2 < 10)
          & (f.rs6 > 0) & (f.close > f.sma200 * 1.02), 2.5, 10),
     ]
 
 
-def portfolio_sim(f, rule, stop_atr, hold, money=20000.0, slots=2, per_day=1):
+def portfolio_sim(f, rule, stop_atr, hold, money=20000.0, slots=2, per_day=1, idle_yield=0.0):
     """The investor's real setup: Rs 20,000, at most 2 trades open, 1 new per day,
     about Rs 10,000 per trade, whole shares only."""
     import numpy as np
@@ -62,7 +53,7 @@ def portfolio_sim(f, rule, stop_atr, hold, money=20000.0, slots=2, per_day=1):
     S, ST = sig.to_numpy(bool), stop.to_numpy(float)
     rank = f.rs_rank.to_numpy(float)
     per = money / slots
-    open_exits, pnl, taken, wins = [], [], 0, 0
+    open_exits, pnl, taken, wins, busy = [], [], 0, 0, []
     dates = f.close.index
     curve = {}
     for i in range(S.shape[0] - 1):
@@ -81,7 +72,8 @@ def portfolio_sim(f, rule, stop_atr, hold, money=20000.0, slots=2, per_day=1):
             qty = int(per // (f._np["close"][i, c] * 1.02))
             if qty < 1:
                 continue
-            gain = qty * (t["exit"] - t["entry"]) - qty * t["entry"] * 0.003
+            gain = qty * (t["exit"] - t["entry"]) - qty * t["entry"] * config.BASE_COST - config.DP_CHARGE_RS
+            busy.append((t["exit_i"] - t["entry_i"] + 1) * qty * t["entry"])
             pnl.append(gain)
             taken += 1
             wins += gain > 0
@@ -94,8 +86,14 @@ def portfolio_sim(f, rule, stop_atr, hold, money=20000.0, slots=2, per_day=1):
     dd = float((eq / eq.cummax() - 1).min() * 100)
     years = (dates[-1] - dates[0]).days / 365.25
     total = sum(pnl)
+    # money not in a trade can sit in a liquid fund / ETF earning idle_yield
+    avg_invested = sum(busy) / len(dates)
+    idle_income = idle_yield * years * max(0.0, money - avg_invested)
+    total += idle_income
     yearly = pd.Series(curve).groupby(lambda d: d.year).sum()
-    return (f"{taken} trades ({taken / years:.0f}/yr), won {100 * wins / taken:.0f}%, total profit Rs {total:,.0f} "
+    return (f"{taken} trades ({taken / years:.0f}/yr), won {100 * wins / taken:.0f}%, "
+            f"in trades {100 * avg_invested / money:.0f}% of the time, idle income Rs {idle_income:,.0f}, "
+            f"total profit Rs {total:,.0f} "
             f"on Rs {money:,.0f} ({100 * ((1 + total / money) ** (1 / years) - 1):.1f}%/yr), worst drop {dd:.1f}%, "
             f"avg win Rs {np.mean([x for x in pnl if x > 0]):,.0f}, avg loss Rs {np.mean([x for x in pnl if x <= 0]):,.0f}; "
             "by year: " + ", ".join(f"{y}: Rs {v:,.0f}" for y, v in yearly.items()))
@@ -126,17 +124,20 @@ def main() -> None:
             f"{r['profit_factor']} | {r['avg_win']}/{r['avg_loss']} | "
             f"{worst['year'] if worst else '-'}: {worst['avg_return'] if worst else '-'} ({worst['win_rate'] if worst else '-'}) | "
             f"{r['max_losing_streak']} | {l12.get('trades', 0)}/{l12.get('win_rate', '-')}/{l12.get('avg_return', '-')}")
-    # yearly detail + the investor's real setup for the leading candidates
+    # the investor's real setup, with realistic costs, for the production rule
     vs = {v[0]: v for v in variants()}
-    for key in ("B1 V1+bull", "B3 SAFE+bull"):
-        name, rule, stop_atr, hold = vs[key]
-        strat = SwingStrategy(key="y", name=name, plain_english="", how_to_exit="",
-                              signal_fn=lambda f, rule=rule, k=stop_atr: (rule(f).fillna(False), f.close - k * f.atr14),
-                              target_r=None, max_hold=hold, exit_above_sma5=True)
-        r = backtest.backtest_swing(f, strat)
-        rows.append(f"{key} yearly: " + ", ".join(f"{y['year']}: {y['trades']}t {y['win_rate']}% {y['avg_return']}%"
-                                                  for y in r.get("yearly", [])))
-        rows.append(f"{key} with Rs 20,000 (2 slots, 1/day): " + portfolio_sim(f, rule, stop_atr, hold))
+    name, rule, stop_atr, hold = vs["B3 SAFE+bull"]
+    rows.append(f"costs: {config.BASE_COST * 100:.2f}% + Rs {config.DP_CHARGE_RS} per sell "
+                f"(= {config.ROUND_TRIP_COST * 100:.2f}% on Rs {config.TRADE_AMOUNT:,.0f})")
+    setups = (("2 x Rs 10,000", 20000.0, 2, 0.0), ("1 x Rs 20,000", 20000.0, 1, 0.0),
+              ("2 x Rs 10,000 + idle cash in liquid fund 6.5%", 20000.0, 2, 0.065),
+              ("1 x Rs 20,000 + idle cash in liquid fund 6.5%", 20000.0, 1, 0.065),
+              ("2 x Rs 5,000 (Rs 10,000 total)", 10000.0, 2, 0.0))
+    for label, money, slots, idle in setups:
+        rows.append(f"SIM {label}: " + portfolio_sim(f, rule, stop_atr, hold, money=money, slots=slots,
+                                                      idle_yield=idle))
+    rows.append("Nifty 50 buy-and-hold over the same period: "
+                f"{100 * ((f.ix.iloc[-1] / f.ix.iloc[0]) ** (1 / years) - 1):.1f}%/yr")
     print("::notice title=safe-study::" + "%0A".join(rows), flush=True)
     print("\n".join(rows))
 
