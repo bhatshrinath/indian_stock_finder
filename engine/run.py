@@ -194,6 +194,7 @@ def long_term_picks(f: Features, uni: pd.DataFrame, prev_holdings: list[str],
         price = float(f.close[s].iloc[-1])
         picks.append({
             "symbol": s, "name": names.get(s, s), "industry": inds.get(s, ""), "kind": "long_term",
+            "large": bool(f.large.get(s, False)),            # Nifty 50 blue chip
             "rank": rank, "score": r2(row.score), "price": r2(price),
             "weight_pct": round(100 / len(chosen), 2),
             "ret_6m": r2(f.ret126[s].iloc[-1] * 100), "ret_12m": r2(f.ret252[s].iloc[-1] * 100),

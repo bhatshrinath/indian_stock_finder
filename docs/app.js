@@ -557,7 +557,7 @@ function renderRecord() {
 
 // ------------------------------------------------------------------ NEWS
 function renderNews() {
-  const el = $("#tab-news");
+  const el = $("#tab-marketnews");
   const items = S.news?.items || [];
   el.innerHTML = `<h2>Market news</h2>
     ${items.length ? `<div class="card"><ul class="news">${items.map(newsItem).join("")}</ul></div>` : `<div class="card empty">No news loaded.</div>`}
@@ -678,10 +678,14 @@ function positionStatus(p) {
     st = { cls: "good", icon: "💰", head: "SELL at 9:15 AM", text: "The plan says this trade is finished. Sell when the market opens." };
   else if (removed)
     st = { cls: "warn", icon: "🔁", head: "SELL (monthly change)", text: "This stock has left the long-term list. Sell it and use the money for the new stocks in Invest." };
+  else if (p.kind === "swing" && p.sellBy && new Date().toISOString().slice(0, 10) > p.sellBy)
+    st = { cls: "warn", icon: "⏱", head: "SELL", text: "The short-term trade's time is up. Sell at the market opening." };
   else if (p.stop && now != null && (now - p.stop) / now < 0.02)
     st = { cls: "warn", icon: "🟡", head: "HOLD, but watch", text: `The price is close to your safety price (${px(p.stop)}).` };
   else
-    st = { cls: "ok", icon: "🟢", head: "HOLD", text: "Nothing to do. The app will tell you when to sell." };
+    st = { cls: "ok", icon: "🟢", head: "HOLD", text: p.kind === "long_term"
+      ? `Hold for months. Sell if it falls below ${px(p.stop)}. The app checks it every month.`
+      : `Nothing to do. The app will tell you when to sell${p.sellBy ? ` (at the latest around ${fmtDate(p.sellBy)})` : ""}.` };
   return { ...st, now, plAmt, plPct, action: st.head !== "HOLD" && st.head !== "HOLD, but watch" };
 }
 
@@ -831,13 +835,14 @@ function renderInvest() {
 function renderMore() {
   const items = [
     ["help", "❓", "How to use this app", "3 simple steps, and what the words mean"],
-    ["mystocks", "💼", "My Stocks", "Track stocks you bought on your own"],
+    ["record", "📊", "Is it working?", "Past results and the live record"],
+    ["plan", "📋", "Daily plan", "Buy / sell / hold list followed by the app"],
     ["invest", "🌱", "Long-term investing", "Strong companies to hold for years"],
     ["ideas", "💡", "All buy ideas", "Every idea, including riskier ones"],
     ["swing", "📈", "All stock ideas (detailed)", "Charts, technical numbers, news"],
     ["longterm", "🧾", "Long-term details", "Company numbers for each stock"],
     ["market", "🌐", "Market details", "Nifty chart and market health"],
-    ["news", "📰", "Market news", "Latest headlines"],
+    ["marketnews", "📰", "Market news", "General headlines"],
     ["settings", "⚙️", "Settings", "My money, alerts, install on phone"],
   ];
   $("#tab-more").innerHTML = `<h2>More</h2><div class="menu">${items.map(([k, ic, t, d]) =>
@@ -847,9 +852,9 @@ function renderMore() {
 function renderHelp() {
   $("#tab-help").innerHTML = `<h2>How to use this app</h2>
     <div class="card"><ol class="stepper">
-      <li><b>Each evening after 6:15 PM</b> (or at 8:45 AM), look at <b>Today</b>, or at the message on your phone. It says exactly what to do: <b>SELL</b>, <b>BUY</b> or <b>HOLD</b>, and how many shares.</li>
-      <li><b>At 9:15 AM</b>, do it in your broker app (Zerodha, Groww…). Buy only up to the price shown. If it's higher, don't buy.</li>
-      <li><b>If the app says "SELL NOW"</b> during the day, sell. That's all. There's nothing to press in this app.</li>
+      <li><b>Open Suggestions</b> (new ones every weekday evening). Each shows how many shares to buy, the most to pay, and roughly how long to hold.</li>
+      <li><b>Buy at 9:15 AM</b> in your broker app (Zerodha, Groww…), then tap <b>"I bought this"</b>.</li>
+      <li><b>Check My Stocks</b> once a day. It says <b>HOLD</b> or <b>SELL</b>, and when.</li>
     </ol>
     <p class="small muted">Tip: many broker apps let you set the safety price as a <b>GTT / stop-loss order</b> right after buying, so it sells automatically.</p></div>
     <h2>Golden rules</h2>
@@ -1032,7 +1037,7 @@ function liveDangers() {
 }
 
 function renderPlan() {
-  const el = $("#tab-today");
+  const el = $("#tab-plan");
   const L = S.latest;
   if (!L) { el.innerHTML = setupHelp(); return; }
   const plan = L.plan || { buy: [], sell: [], hold: [] };
@@ -1085,14 +1090,123 @@ function renderPlan() {
   if (ws) ws.onclick = () => saveMoney(+$("#w-money").value);
 }
 
+// ================================================================== SUGGESTIONS (main screen)
+// Only what to buy and for roughly how long. Reasons are optional ("Why?").
+// He marks what he buys with one tap; My Stocks then says when to sell.
+
+const addDays = (iso, n) => { const d = new Date(iso); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+
+function suggestions() {
+  const L = S.latest || {};
+  const out = [];
+  const swing = L.swing || [];
+  for (const b of (L.plan?.buy || [])) {
+    const pk = swing.find((x) => x.symbol === b.symbol) || {};
+    out.push({ kind: "swing", symbol: b.symbol, name: b.name, price: b.price, max_entry: b.max_entry, stop: b.stop,
+      horizon: "Short term · about 1 week", sellRule: "The app will tell you when to sell (usually within a week).",
+      why: (SIMPLE[b.strategy] || {}).why, odds: outOf10(b.hist_win_rate), news: pk.news || [] });
+  }
+  const lt = (L.long_term?.picks || []).filter((p) => p.large && !(p.warnings || []).length && !(p.red_flags || []).length
+    && p.price * 1.02 <= tradeMoney());               // only what his amount can buy
+  for (const p of lt.slice(0, 3)) {
+    out.push({ kind: "long_term", symbol: p.symbol, name: p.name, price: p.price, max_entry: +(p.price * 1.02).toFixed(2),
+      stop: p.review_below, horizon: "Long term · 6 to 12 months",
+      sellRule: `Hold for months. Sell if it falls below ${px(p.review_below)}, or when the app says at the monthly check.`,
+      why: "A strong, steadily rising company among India's 50 biggest. Ranked by 6 and 12-month strength.",
+      odds: null, news: p.news || [] });
+  }
+  return out.filter((x) => x.max_entry <= tradeMoney());
+}
+
+function suggestionCard(x) {
+  const amt = tradeMoney();
+  const qty = Math.floor(amt / x.max_entry);
+  const mine = myPositions().some((p) => p.symbol === x.symbol);
+  return `<article class="card sugg">
+    <div class="row"><div><h3>${esc(x.name)}</h3><div class="muted small">${esc(x.symbol)}</div></div>
+      <span class="badge ${x.kind === "swing" ? "b-watch" : "b-new"}">${esc(x.horizon)}</span></div>
+    <div class="do">${qty ? `Buy <b>${shares(qty)}</b>` : `<span class="small">One share costs more than ${inr(amt)}. Skip.</span>`}</div>
+    ${qty ? `<div class="small">Pay up to <b>${px(x.max_entry)}</b> (about ${inr(qty * x.max_entry)}). Sell if it falls to <b>${px(x.stop)}</b>.</div>` : ""}
+    <details><summary>Why? (optional)</summary>
+      <p class="small">${esc(x.why || "")}${x.odds ? ` In the past 5 years, trades like this made money ${x.odds} out of 10 times.` : ""}</p>
+      <p class="small muted">${esc(x.sellRule)}</p>
+      ${x.news.length ? `<ul class="news">${x.news.slice(0, 3).map(newsItem).join("")}</ul>` : ""}
+    </details>
+    ${qty ? `<div class="btns">${mine ? `<span class="small up">✓ In My Stocks</span>`
+      : `<button class="btn primary" data-mark="${esc(x.kind)}|${esc(x.symbol)}">✅ I bought this</button>`}</div>` : ""}
+  </article>`;
+}
+
+function renderSuggestions() {
+  const el = $("#tab-today");
+  const L = S.latest;
+  if (!L) { el.innerHTML = setupHelp(); return; }
+  const list = suggestions();
+  const act = myPositions().map((p) => ({ p, s: positionStatus(p) })).filter((x) => x.s.action);
+  let html = "";
+  if (!moneyIsSet()) html += planWelcome();
+  else html += smallAmountWarning();
+  if (act.length) {
+    html += `<h2>⚠️ Sell</h2>` + act.map(({ p, s }) => `<div class="card st-card ${s.cls}"><div class="status-head">${s.icon} ${s.head}: ${esc(p.symbol)}</div><div class="small">${s.text}</div></div>`).join("");
+  }
+  html += `<h2>Suggestions</h2>`;
+  html += list.length ? list.map(suggestionCard).join("")
+    : `<div class="card empty">🙏 No suggestions today. The app only suggests when the odds are clearly good.</div>`;
+  html += `<p class="small muted center">Buy at the market opening (9:15 AM). Updated ${esc(ago(L.generated))}.</p>`;
+  el.innerHTML = html;
+  const ws = $("#w-money-save");
+  if (ws) ws.onclick = () => saveMoney(+$("#w-money").value);
+}
+
+function openMarkDialog(kind, sym) {
+  const x = suggestions().find((s) => s.kind === kind && s.symbol === sym);
+  if (!x) return;
+  const qty = Math.max(1, Math.floor(tradeMoney() / x.max_entry));
+  const q = livePrice(sym);
+  $("#dlg-body").innerHTML = `<h3>I bought ${esc(x.name)}</h3>
+    <label class="field">How many shares?<input id="mq" type="number" inputmode="numeric" min="1" value="${qty}"></label>
+    <label class="field">Price paid per share (₹)<input id="mp" type="number" inputmode="decimal" step="0.05" value="${(q ? q.price : x.price) || ""}"></label>
+    <div class="btns"><button class="btn primary wide" id="msave">Save</button></div>`;
+  $("#dlg").showModal();
+  $("#msave").onclick = (e) => {
+    e.preventDefault();
+    const price = +$("#mp").value || x.price;
+    const risk = x.price - x.stop;
+    const my = myPositions();
+    my.push({ id: sym + "-" + Date.now(), symbol: sym, name: x.name, kind: kind, qty: +$("#mq").value || qty, price,
+      stop: kind === "swing" ? +(price - risk).toFixed(2) : x.stop, target: null,
+      date: new Date().toISOString(), sellBy: kind === "swing" ? addDays(new Date().toISOString(), 16) : null,
+      lastPrice: x.price });
+    store.set(LS.my, my);
+    $("#dlg").close();
+    renderAll();
+  };
+}
+
+function renderRecoNews() {
+  const L = S.latest || {};
+  const syms = new Map();
+  for (const x of suggestions()) syms.set(x.symbol, { name: x.name, news: x.news });
+  for (const p of myPositions()) {
+    if (syms.has(p.symbol)) continue;
+    const src = [...(L.swing || []), ...(L.long_term?.picks || [])].find((x) => x.symbol === p.symbol);
+    syms.set(p.symbol, { name: p.name || p.symbol, news: src?.news || [] });
+  }
+  const blocks = [...syms.entries()].map(([sym, v]) => `<div class="card"><h3>${esc(v.name)} <span class="muted small">${esc(sym)}</span></h3>
+    ${v.news.length ? `<ul class="news">${v.news.map(newsItem).join("")}</ul>` : `<p class="small muted">No recent news.</p>`}</div>`).join("");
+  $("#tab-news").innerHTML = `<h2>News</h2><p class="small muted">Only for the suggested stocks and the stocks you own.</p>
+    ${blocks || `<div class="card empty">No suggestions or stocks yet, so no news.</div>`}`;
+}
+
 // ------------------------------------------------------------------ wiring
-const MAIN_TABS = ["today", "record", "more"];
+const MAIN_TABS = ["today", "mystocks", "news", "more"];
 const TITLES = { help: "How to use", record: "Is it working?", swing: "All stock ideas", longterm: "Long-term details",
   market: "Market details", news: "Market news", settings: "Settings", mystocks: "My Stocks",
-  invest: "Long-term investing", ideas: "All buy ideas" };
+  invest: "Long-term investing", ideas: "All buy ideas", plan: "Daily plan", marketnews: "Market news" };
 
 function renderAll() {
   renderStatus();
+  renderSuggestions();
   renderPlan();
   renderHome();
   renderMyStocks();
@@ -1104,6 +1218,7 @@ function renderAll() {
   renderLongTerm();
   if (S.bt || $("#tab-record").classList.contains("active")) renderRecord();
   renderNews();
+  renderRecoNews();
   if (!$("#tab-settings").classList.contains("active")) renderSettings();
   $("#disclaimer").textContent = S.latest?.disclaimer || "";
 }
@@ -1115,7 +1230,7 @@ function showTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === "tab-" + name));
   const back = $("#back");
   back.hidden = MAIN_TABS.includes(name);
-  $("#page-title").textContent = TITLES[name] || "";
+  $("#page-title").textContent = MAIN_TABS.includes(name) ? "" : (TITLES[name] || "");
   $(".brand").hidden = !back.hidden;
   $("#status").hidden = !back.hidden;
   store.set(LS.tab, name);
@@ -1131,10 +1246,11 @@ function findPick(sym, strat) {
 }
 
 document.addEventListener("click", (e) => {
-  const t = e.target.closest("[data-tab],[data-goto],[data-filter],[data-buy],[data-sell],[data-ltinfo],[data-sold],[data-preset],[data-detail],[data-money]");
+  const t = e.target.closest("[data-tab],[data-goto],[data-filter],[data-buy],[data-sell],[data-ltinfo],[data-sold],[data-preset],[data-detail],[data-money],[data-mark]");
   if (!t) return;
   if (t.dataset.preset) { saveCapital(+t.dataset.preset); return; }
   if (t.dataset.money) { saveMoney(+t.dataset.money); return; }
+  if (t.dataset.mark) { const [k, sym] = t.dataset.mark.split("|"); openMarkDialog(k, sym); return; }
   if (t.dataset.detail) { const [sym, strat] = t.dataset.detail.split("|"); openDetail(sym, strat); return; }
   if (t.dataset.sold) {
     if (confirm("Remove this stock from My Stocks? (Do this after you have sold it.)")) {
