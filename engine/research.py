@@ -95,6 +95,27 @@ def main() -> None:
                                                       idle_yield=idle))
     rows.append("Nifty 50 buy-and-hold over the same period: "
                 f"{100 * ((f.ix.iloc[-1] / f.ix.iloc[0]) ** (1 / years) - 1):.1f}%/yr")
+    # ---- long-term: the app's suggestion method with risk controls
+    inds = dict(zip(uni.symbol, uni.industry))
+    n50 = set(f.large[f.large].index)
+    rows.append("LONG-TERM (Nifty 50, 1 per sector, monthly) | per yr | worst fall | months up | yearly")
+    for label, kw in (("4 stocks", dict(n=4)),
+                      ("4 stocks + guard 100%", dict(n=4, trend_guard=True, guard_frac=1.0)),
+                      ("2 stocks + 50% index", dict(n=2, index_weight=0.5)),
+                      ("2 stocks + 50% index + guard 100%", dict(n=2, index_weight=0.5, trend_guard=True, guard_frac=1.0)),
+                      ("3 stocks + 33% index + guard 100%", dict(n=3, index_weight=1 / 3, trend_guard=True, guard_frac=1.0)),
+                      ("3 stocks + 33% index + guard 50%", dict(n=3, index_weight=1 / 3, trend_guard=True, guard_frac=0.5)),
+                      ("index only", dict(n=1, index_weight=1.0)),
+                      ("index + guard 100%", dict(n=1, index_weight=1.0, trend_guard=True, guard_frac=1.0))):
+        r = backtest.backtest_momentum(f, inds, universe=n50, max_per_industry=1, **kw)
+        if not r:
+            continue
+        cur = r["curve"]
+        yearly = {}
+        for a, b in zip(cur, cur[1:]):
+            yearly.setdefault(b["d"][:4], [a["p"], b["p"]])[1] = b["p"]
+        rows.append(f"{label} | {r['cagr']}% (Nifty {r['bench_cagr']}%) | {r['max_drawdown']}% (Nifty {r['bench_max_drawdown']}%) | "
+                    f"{r['pct_months_positive']}% | " + ", ".join(f"{y}: {100 * (v[1] / v[0] - 1):+.1f}%" for y, v in yearly.items()))
     print("::notice title=safe-study::" + "%0A".join(rows), flush=True)
     print("\n".join(rows))
 

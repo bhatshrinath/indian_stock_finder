@@ -223,6 +223,7 @@ def portfolio_sim(f: Features, strat: SwingStrategy, money: float, slots: int = 
 # ======================================================================= long-term
 def backtest_momentum(f: Features, industries: dict[str, str], n: int = config.LT_PORTFOLIO_SIZE,
                       universe: set | None = None, max_per_industry: int = 4,
+                      index_weight: float = 0.0, guard_frac: float = 0.5,
                       trend_guard: bool = False) -> dict:
     """Monthly rebalance. trend_guard=True holds 50% cash (earning ~6%/yr) whenever
     the Nifty is below its 200-day average at the rebalance date."""
@@ -251,8 +252,10 @@ def backtest_momentum(f: Features, industries: dict[str, str], n: int = config.L
         holdings = new
         r = (c[holdings].iloc[j] / c[holdings].iloc[i] - 1).fillna(0).mean()
         r -= turnover * config.ROUND_TRIP_COST
+        br_ = f.ix.iloc[j] / f.ix.iloc[i] - 1
+        r = (1 - index_weight) * r + index_weight * br_      # part held in a Nifty 50 index fund
         if trend_guard and f.ix.iloc[i] < f.ix_sma200.iloc[i]:
-            r = 0.5 * r + 0.5 * cash_yield_m * (j - i) / 21
+            r = (1 - guard_frac) * r + guard_frac * cash_yield_m * (j - i) / 21
         br = f.ix.iloc[j] / f.ix.iloc[i] - 1
         monthly_rets.append(r)
         bench_rets.append(br)
