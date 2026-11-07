@@ -6,7 +6,7 @@
 
 const DATA = "data/";
 const LS = { settings: "sf.settings", my: "sf.my", seen: "sf.seenIdeas", alerted: "sf.alerted", tab: "sf.tab" };
-const DEFAULTS = { tradeMoney: 20000, protect: true, capital: 500000, ltPct: 70, swingPct: 30, riskPct: 1, maxPosPct: 20, notify: false };
+const DEFAULTS = { tradeMoney: 10000, protect: false, capital: 500000, ltPct: 70, swingPct: 30, riskPct: 1, maxPosPct: 20, notify: false };
 const S = { latest: null, live: null, news: null, bt: null, track: null, swingFilter: "buy" };
 
 // ------------------------------------------------------------------ storage (safe)
@@ -14,7 +14,11 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
-const settings = () => ({ ...DEFAULTS, ...store.get(LS.settings, {}) });
+const settings = () => {
+  const st = { ...DEFAULTS, ...store.get(LS.settings, {}) };
+  if (!st.protectChosen) st.protect = false;          // protection only if explicitly chosen in Settings
+  return st;
+};
 const myPositions = () => store.get(LS.my, []);
 
 // ------------------------------------------------------------------ format helpers
@@ -607,7 +611,7 @@ function renderSettings() {
       <p>Source: ${esc(S.latest?.data_source || "–")}, last market day ${esc(S.latest?.data_date || "–")}, updated ${esc(ago(S.latest?.generated))}.</p>
       <div class="btns"><button class="btn small" id="s-reload">Refresh now</button><button class="btn small" id="s-clear">Clear my positions</button></div>
     </div>`;
-  $("#s-money-save").onclick = () => { store.set(LS.settings, { ...settings(), protect: $("#s-protect").value === "1" }); saveMoney(+$("#s-money").value); renderSettings(); $("#s-money-save").textContent = "Saved ✓"; };
+  $("#s-money-save").onclick = () => { store.set(LS.settings, { ...settings(), protect: $("#s-protect").value === "1", protectChosen: true }); saveMoney(+$("#s-money").value); renderSettings(); $("#s-money-save").textContent = "Saved ✓"; };
   $("#s-save").onclick = () => {
     const lt = +$("#s-lt").value, sw = +$("#s-sw").value;
     if (lt + sw > 100) { alert("Long-term + swing cannot be more than 100%."); return; }
@@ -1121,7 +1125,64 @@ function moneyPlan() {
   return { money, stock, safe: money - stock, protect: true };
 }
 
+
+// Diversified basket inside the stock market: big companies from different
+// sectors, a Nifty 50 index fund, gold, and a mid-size company only when it
+// passed extra-strict checks. Every stock passed business, price, news and
+// market checks in the engine. Fewer holdings for small amounts (charges).
+function basket() {
+  const L = S.latest || {};
+  const M = tradeMoney();
+  const nHold = M < 3000 ? 1 : M < 6000 ? 2 : M < 12000 ? 3 : 4;
+  const large = L.long_term_safe || [];
+  const mids = L.mid_safe || [];
+  const funds = L.funds || [];
+  const idx = funds.find((f) => f.symbol === "NIFTYBEES");
+  const gold = funds.find((f) => f.symbol === "GOLDBEES" && f.uptrend);
+  const swing = (L.plan?.buy || [])[0];
+  const order = [];
+  if (swing && M >= MIN_SHORT_TERM) order.push({ ...swing, _swing: true });
+  order.push(large[0], idx, large[1], gold, mids[0], large[2], large[3], large[4]);
+  const seenInd = new Set();
+  const cand = order.filter(Boolean).filter((x) => {
+    const ind = x.industry || x.symbol;
+    if (seenInd.has(ind)) return false;
+    seenInd.add(ind);
+    return true;
+  });
+  let per = M / nHold;
+  let chosen = cand.filter((x) => (x.max_entry || x.price * 1.02) <= per).slice(0, nHold);
+  if (chosen.length && chosen.length < nHold) per = M / chosen.length;
+  return chosen.map((x) => {
+    const isFund = x.size === "fund";
+    const tag = x._swing ? "Short term · about 1 week"
+      : isFund ? "Long term · hold for months" : "Long term · 6 to 12 months";
+    const type = x._swing ? "Big company · quick bounce trade"
+      : isFund ? x.type
+      : x.size === "mid" ? `Mid-size company · ${x.industry} · passed extra-strict checks`
+      : `Big company · ${x.industry}`;
+    const checks = isFund ? "✓ Price rising" : "✓ Strong business · ✓ Price rising · ✓ News fine · ✓ Market OK";
+    return {
+      kind: x._swing ? "swing" : "long_term", amount: per, symbol: x.symbol, name: x.name, price: x.price,
+      max_entry: x.max_entry || +(x.price * 1.02).toFixed(2), stop: x._swing ? x.stop : x.review_below,
+      horizon: tag, type, checks: x._swing ? "✓ Strong past record · ✓ Market rising" : checks,
+      sellRule: x._swing ? "The app will tell you when to sell (usually within a week)."
+        : `Hold for months. Sell if it falls below ${px(x.review_below)}, or when the app says.`,
+      why: x._swing ? (SIMPLE[x.strategy] || {}).why
+        : isFund ? `${x.type}. Spreads your money so one company can't hurt much.`
+        : `Among the strongest steady risers in its sector, with a profitable, low-debt business${x.fundamentals?.roe ? ` (return on equity ${num(x.fundamentals.roe, 0)}%)` : ""}.`,
+      odds: x._swing ? outOf10(x.hist_win_rate) : null,
+      news: x.news || (L.swing || []).find((y) => y.symbol === x.symbol)?.news || [],
+    };
+  });
+}
+
 function suggestions() {
+  if (!settings().protect) return basket();
+  return protectedSuggestions();
+}
+
+function protectedSuggestions() {
   const L = S.latest || {};
   const out = [];
   const plan = moneyPlan();
@@ -1162,10 +1223,11 @@ function suggestionCard(x) {
   const qty = Math.floor(amt / x.max_entry);
   const mine = myPositions().some((p) => p.symbol === x.symbol);
   return `<article class="card sugg">
-    <div class="row"><div><h3>${esc(x.name)}</h3><div class="muted small">${esc(x.symbol)}</div></div>
+    <div class="row"><div><h3>${esc(x.name)}</h3><div class="muted small">${esc(x.type || x.symbol)}</div></div>
       <span class="badge ${x.kind === "swing" ? "b-watch" : "b-new"}">${esc(x.horizon)}</span></div>
     <div class="do">${qty ? `Buy <b>${shares(qty)}</b>` : `<span class="small">One share costs more than ${inr(amt)}. Skip.</span>`}</div>
     ${qty ? `<div class="small">Pay up to <b>${px(x.max_entry)}</b> (about ${inr(qty * x.max_entry)}). Sell if it falls to <b>${px(x.stop)}</b>.</div>` : ""}
+    ${x.checks ? `<div class="small up" style="margin-top:6px">${esc(x.checks)}</div>` : ""}
     <details><summary>Why? (optional)</summary>
       <p class="small">${esc(x.why || "")}${x.odds ? ` In the past 5 years, trades like this made money ${x.odds} out of 10 times.` : ""}</p>
       <p class="small muted">${esc(x.sellRule)}</p>
@@ -1206,6 +1268,11 @@ function renderSuggestions() {
           : `No suitable stock today: keep it all in the safe part for now.`}</div></div>
       <p class="small muted">Built so that even if every stock fell to its safety price, the safe part's interest would earn it back within a year.
         Shares are never 100% sure, but this keeps the worst case close to no loss.</p></div>`;
+  }
+  if (!mp.protect && list.length) {
+    html += `<div class="card small"><b>Your ${inr(mp.money)}, spread over ${list.length} different ${list.length === 1 ? "holding" : "holdings"}:</b>
+      ${list.map((x) => esc(x.name.replace(/ Ltd\.?$/, ""))).join(" · ")}.
+      <div class="muted" style="margin-top:4px">Each stock passed all checks: strong business, rising price, no bad news, market OK.</div></div>`;
   }
   html += `<h2>Suggestions</h2>`;
   html += list.length ? list.map(suggestionCard).join("")

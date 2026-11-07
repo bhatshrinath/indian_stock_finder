@@ -218,3 +218,20 @@ def test_portfolio_sim_respects_slots_and_costs():
     assert one["invested_pct_of_time"] <= 100
     # on a random walk the account should not show a big profit (costs + no edge)
     assert one["total_profit"] < 0.5 * 20000
+
+
+def test_all_checks_must_be_positive():
+    from engine.run import all_checks
+    good = {"industry": "Fast Moving Consumer Goods", "news_sentiment": 0.2, "red_flags": [],
+            "fundamentals": {"roe": 20, "debt_to_equity": 30, "profit_margin": 12, "earnings_growth": 8, "pe": 40},
+            "trend": {"above_50": True, "above_200": True, "avg50_above_avg200": True, "ret_6m": 8, "ret_12m": 15,
+                      "beats_nifty_6m": True, "rsi14": 58}}
+    assert all(all_checks(good, 2).values())
+    assert not all_checks({**good, "fundamentals": {}}, 2)["business"]                  # no data -> no pass
+    assert not all_checks({**good, "fundamentals": {**good["fundamentals"], "roe": 8}}, 2)["business"]
+    assert not all_checks({**good, "red_flags": ["fraud"]}, 2)["news"]
+    assert not all_checks({**good, "news_sentiment": -0.3}, 2)["news"]
+    assert not all_checks({**good, "trend": {**good["trend"], "rsi14": 82}}, 2)["price"]  # overheated
+    assert not all_checks(good, 0)["market"]
+    bank = {**good, "industry": "Financial Services", "fundamentals": {**good["fundamentals"], "debt_to_equity": 600}}
+    assert all_checks(bank, 2)["business"]                                               # banks: no debt test

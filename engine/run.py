@@ -211,6 +211,29 @@ def long_term_picks(f: Features, uni: pd.DataFrame, prev_holdings: list[str],
     return picks, changes
 
 
+def trend_facts(f: Features, s: str) -> dict:
+    c = float(f.close[s].iloc[-1])
+    return {"above_50": c > float(f.sma50[s].iloc[-1]), "above_200": c > float(f.sma200[s].iloc[-1]),
+            "avg50_above_avg200": float(f.sma50[s].iloc[-1]) > float(f.sma200[s].iloc[-1]),
+            "ret_6m": r2(f.ret126[s].iloc[-1] * 100), "ret_12m": r2(f.ret252[s].iloc[-1] * 100),
+            "beats_nifty_6m": bool(f.rs6[s].iloc[-1] > 0), "rsi14": r2(f.rsi14[s].iloc[-1])}
+
+
+def all_checks(x: dict, regime: int) -> dict:
+    """Every check must be positive for a stock to be suggested."""
+    t = x.get("trend") or {}
+    price_ok = bool(t.get("above_50") and t.get("above_200") and t.get("avg50_above_avg200")
+                    and (t.get("ret_6m") or 0) > 0 and (t.get("ret_12m") or 0) > 0
+                    and t.get("beats_nifty_6m") and (t.get("rsi14") or 100) < 75)
+    fd = x.get("fundamentals") or {}
+    fin = "Financial" in (x.get("industry") or "")
+    roe, de, pm, eg, pe = (fd.get(k) for k in ("roe", "debt_to_equity", "profit_margin", "earnings_growth", "pe"))
+    business_ok = bool(roe is not None and roe >= 12 and (pm is None or pm > 0) and (eg is None or eg >= 0)
+                       and (pe is None or 0 < pe < 60) and (fin or de is None or de <= 100))
+    news_ok = not x.get("red_flags") and (x.get("news_sentiment") or 0) >= 0
+    return {"business": business_ok, "price": price_ok, "news": news_ok, "market": regime >= 1}
+
+
 def safe_long_term(f: Features, uni: pd.DataFrame, use_fundamentals: bool, n: int = 5) -> list[dict]:
     """Long-term ideas for a very cautious investor: the strongest Nifty 50
     companies by steady 6/12-month momentum, in an uptrend, with no debt,
@@ -232,12 +255,84 @@ def safe_long_term(f: Features, uni: pd.DataFrame, use_fundamentals: bool, n: in
         price = float(f.close[s].iloc[-1])
         out.append({"symbol": s, "name": names.get(s, s), "industry": inds.get(s, ""), "kind": "long_term",
                     "large": True, "price": r2(price),
+                    "trend": trend_facts(f, s),
                     # very low risk: never more than 12% below today's price (or the 200-day average if closer)
                     "review_below": r2(max(float(f.sma200[s].iloc[-1]), price * 0.88)),
                     "ret_12m": r2(f.ret252[s].iloc[-1] * 100), "score": r2(sc.loc[s, "score"]),
                     "fundamentals": funda.get(s, {})})
         if len(out) >= n:
             break
+    return out
+
+
+def safe_midcaps(f: Features, uni: pd.DataFrame, regime: int, use_fundamentals: bool, n: int = 2) -> list[dict]:
+    """Mid-size companies (Nifty 200, not Nifty 50) ONLY when every strict check
+    passes: whole market rising, among the strongest steady risers, low price
+    swings, near the yearly high, and strong, low-debt, profitable business.
+    Small companies are never suggested (they are not even in the universe)."""
+    if regime != 2:
+        return []
+    names = dict(zip(uni.symbol, uni.name))
+    inds = dict(zip(uni.symbol, uni.industry))
+    sc = momentum_scores(f)
+    if sc.empty:
+        return []
+    cands = []
+    for s in list(sc.index[:25]):
+        if bool(f.large.get(s, False)):
+            continue
+        c, s50, s200 = float(f.close[s].iloc[-1]), float(f.sma50[s].iloc[-1]), float(f.sma200[s].iloc[-1])
+        vol = float(sc.loc[s, "vol"])
+        near_high = c >= 0.92 * float(f.high252[s].iloc[-1])
+        if c > s50 > s200 and vol < 0.28 and near_high:
+            cands.append(s)
+    funda = fundamentals.fetch(cands[:10]) if (use_fundamentals and cands) else {}
+    out = []
+    for s in cands:
+        fd = funda.get(s, {})
+        pts, warn = fundamentals.quality_check(fd)
+        strong = (fd.get("roe") or 0) >= 15 and (fd.get("debt_to_equity") if fd.get("debt_to_equity") is not None else 999) <= 50 \
+            and (fd.get("earnings_growth") or 0) > 10 and 0 < (fd.get("pe") or 999) < 50
+        if warn or not strong:
+            continue
+        price = float(f.close[s].iloc[-1])
+        out.append({"symbol": s, "name": names.get(s, s), "industry": inds.get(s, ""), "kind": "long_term",
+                    "size": "mid", "price": r2(price), "review_below": r2(max(float(f.sma50[s].iloc[-1]), price * 0.90)),
+                    "trend": trend_facts(f, s),
+                    "ret_12m": r2(f.ret252[s].iloc[-1] * 100), "fundamentals": fd})
+        if len(out) >= n:
+            break
+    return out
+
+
+FUNDS = [("NIFTYBEES", "Nifty 50 index fund (ETF)", "Index fund: 50 big companies in one"),
+         ("GOLDBEES", "Gold fund (ETF)", "Gold: often holds up when shares fall")]
+
+
+def fund_info(demo: bool) -> list[dict]:
+    """Exchange-traded funds for diversification (bought like a share on NSE)."""
+    if demo:
+        return [{"symbol": s, "name": n, "type": t, "kind": "long_term", "size": "fund", "price": pr,
+                 "review_below": round(pr * 0.9, 2), "uptrend": True}
+                for (s, n, t), pr in zip(FUNDS, (285.0, 92.0))]
+    try:
+        p = data.load_yfinance([s for s, _, _ in FUNDS], period="2y")
+    except Exception as exc:
+        log.warning("fund prices failed: %s", exc)
+        return []
+    if p is None:
+        return []
+    out = []
+    for s, n, t in FUNDS:
+        if s not in p.close.columns:
+            continue
+        c = p.close[s].dropna()
+        if len(c) < 210:
+            continue
+        price, sma200 = float(c.iloc[-1]), float(c.rolling(200).mean().iloc[-1])
+        out.append({"symbol": s, "name": n, "type": t, "kind": "long_term", "size": "fund", "price": r2(price),
+                    "review_below": r2(max(sma200, price * 0.90)), "uptrend": price > sma200,
+                    "ret_12m": r2((price / float(c.iloc[-253]) - 1) * 100) if len(c) > 253 else None})
     return out
 
 
@@ -402,7 +497,9 @@ def run_full(args) -> None:
     snaps = tr.get("portfolio_snapshots", [])
     prev = list(snaps[-1]["holdings"].keys()) if snaps else []
     lt_picks, changes = long_term_picks(f, uni, prev, use_fundamentals=not args.demo)
-    lt_safe = safe_long_term(f, uni, use_fundamentals=not args.demo)
+    lt_safe = safe_long_term(f, uni, use_fundamentals=not args.demo, n=8)
+    mid_safe = safe_midcaps(f, uni, mkt["regime"], use_fundamentals=not args.demo)
+    funds = fund_info(args.demo)
 
     # ---- fundamentals for swing picks (light), news for everything shown
     if not args.demo and picks:
@@ -411,13 +508,19 @@ def run_full(args) -> None:
         for pk in picks:
             pts, warn = fundamentals.quality_check(fd.get(pk["symbol"], {}))
             pk.update(fundamentals=fd.get(pk["symbol"], {}), quality_pts=pts, warnings=warn)
-    names = {x["symbol"]: x["name"] for x in picks + lt_picks + lt_safe}
+    names = {x["symbol"]: x["name"] for x in picks + lt_picks + lt_safe + mid_safe}
     nw = news.news_for(names) if (names and not args.no_news) else {}
-    for x in picks + lt_picks + lt_safe:
+    for x in picks + lt_picks + lt_safe + mid_safe:
         n = nw.get(x["symbol"], {})
         x["news"] = n.get("items", [])
         x["news_sentiment"] = n.get("sentiment", 0.0)
         x["red_flags"] = n.get("red_flags", [])
+    for lst in (lt_safe, mid_safe):
+        for x in lst:
+            x["checks"] = all_checks(x, mkt["regime"])
+    lt_safe = [x for x in lt_safe if all(x["checks"].values())]
+    mid_safe = [x for x in mid_safe if all(x["checks"].values())]
+    log.info("all-positive picks: %d large, %d mid", len(lt_safe), len(mid_safe))
     for pk in picks:
         score_swing(pk, mkt["regime"])
     picks.sort(key=lambda x: x["score"], reverse=True)
@@ -478,6 +581,8 @@ def run_full(args) -> None:
         "open_trades": open_trades,
         "plan": plan,
         "long_term_safe": [x for x in lt_safe if not x.get("red_flags")],
+        "mid_safe": [x for x in mid_safe if not x.get("red_flags")],
+        "funds": funds,
         "safe": {
             "enabled": config.SAFE_MODE, "trade_amount": config.TRADE_AMOUNT,
             "max_open_trades": config.MAX_OPEN_TRADES, "universe": "Nifty 50",
