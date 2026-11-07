@@ -934,10 +934,11 @@ function sessionInfo(dataDate) {
 }
 
 function planWelcome() {
-  const presets = [10000, 15000, 20000];
+  const presets = [5000, 10000, 20000];
   return `<div class="card welcome">
     <h2>Welcome 🙏</h2>
-    <p class="big-q">How much money will you use for trading?</p>
+    <p class="big-q">How much money do you have today?</p>
+    <p class="small muted">You can change it any day at the top of this screen.</p>
     <div class="preset-row three">${presets.map((v) => `<button class="btn" data-money="${v}">${inr(v)}</button>`).join("")}</div>
     <label class="field">Or type an amount (₹)<input id="w-money" type="number" inputmode="numeric" min="2000" step="1000" placeholder="e.g. 12000"></label>
     <button class="btn primary wide" id="w-money-save">Save</button>
@@ -947,7 +948,7 @@ function planWelcome() {
 }
 
 function saveMoney(v) {
-  if (!v || v < 2000) { alert("Please enter at least ₹2,000."); return; }
+  if (!v || v < 1000) { alert("Please enter at least ₹1,000."); return; }
   store.set(LS.settings, { ...settings(), tradeMoney: Math.round(v) });
   renderAll();
 }
@@ -1111,6 +1112,7 @@ const addDays = (iso, n) => { const d = new Date(iso); d.setDate(d.getDate() + n
 // safety price (at most 12% below), one year of interest on the safe part
 // (FD / liquid fund, ~6.5%) would cover it.
 const SAFE_YIELD = 0.065, MAX_STOCK_LOSS = 0.12, MIN_SHORT_TERM = 15000;
+const MIN_PER_STOCK = 1500, TWO_STOCKS_FROM = 6000;   // below these, charges eat too much
 
 function moneyPlan() {
   const money = tradeMoney();
@@ -1134,8 +1136,9 @@ function suggestions() {
   const lt = (L.long_term_safe || (L.long_term?.picks || []).filter((p) => p.large)).filter((p) => !(p.warnings || []).length && !(p.red_flags || []).length
 )
   // diversity: at most 2 (protected) or 3 companies, never two from the same industry
-  const nLong = plan.protect ? 2 : 3;
-  const per = plan.protect ? plan.stock / nLong : plan.stock;
+  // small amounts: fewer stocks, so the fixed charges don't eat the profit
+  const nLong = plan.stock < MIN_PER_STOCK ? 0 : plan.stock < TWO_STOCKS_FROM ? 1 : plan.protect ? 2 : 3;
+  const per = nLong ? (plan.protect ? plan.stock / nLong : plan.stock) : 0;
   const usedInd = new Set();
   const chosen = [];
   for (const p of lt) {
@@ -1181,7 +1184,14 @@ function renderSuggestions() {
   const act = myPositions().map((p) => ({ p, s: positionStatus(p) })).filter((x) => x.s.action);
   let html = "";
   if (!moneyIsSet()) html += planWelcome();
-  else html += smallAmountWarning();
+  else {
+    const chips = [5000, 10000, 15000, 20000];
+    html += `<div class="card amount-box"><div class="small muted">Money I have today</div>
+      <div class="amount-row"><input id="amt-today" type="number" inputmode="numeric" min="1000" step="500" value="${tradeMoney()}" aria-label="Money I have today">
+        <button class="btn primary" id="amt-save">Update</button></div>
+      <div class="pill-row">${chips.map((v) => `<button data-money="${v}" class="${v === tradeMoney() ? "on" : ""}">${inr(v)}</button>`).join("")}</div></div>`;
+    if (!settings().protect) html += smallAmountWarning();
+  }
   if (act.length) {
     html += `<h2>⚠️ Sell</h2>` + act.map(({ p, s }) => `<div class="card st-card ${s.cls}"><div class="status-head">${s.icon} ${s.head}: ${esc(p.symbol)}</div><div class="small">${s.text}</div></div>`).join("");
   }
@@ -1190,8 +1200,10 @@ function renderSuggestions() {
   if (mp.protect) {
     html += `<div class="card plan-card"><h2 style="margin-top:0">Your ${inr(mp.money)} plan</h2>
       <div class="line"><span class="ic">🏦</span><div><b>${inr(mp.safe)}</b> in a bank FD or a liquid fund (for example LIQUIDBEES). Safe, about 6.5% a year.</div></div>
-      <div class="line"><span class="ic">📈</span><div>${nStocks ? `<b>${inr(mp.stock)}</b> in the ${nStocks === 1 ? "stock" : nStocks + " stocks"} below, from different sectors, held for months.`
-        : `No suitable stock today: keep it all in the safe part for now.`}</div></div>
+      <div class="line"><span class="ic">📈</span><div>${nStocks ? `<b>${inr(mp.stock)}</b> in the ${nStocks === 1 ? "stock below" : nStocks + " stocks below, from different sectors,"} held for months.`
+        : mp.stock < MIN_PER_STOCK
+          ? `This amount is small for shares (charges would eat the profit). Keep it all in the safe part. Shares make sense from about ${inr(Math.ceil(MIN_PER_STOCK * (SAFE_YIELD + MAX_STOCK_LOSS) / SAFE_YIELD / 500) * 500)}.`
+          : `No suitable stock today: keep it all in the safe part for now.`}</div></div>
       <p class="small muted">Built so that even if every stock fell to its safety price, the safe part's interest would earn it back within a year.
         Shares are never 100% sure, but this keeps the worst case close to no loss.</p></div>`;
   }
@@ -1202,6 +1214,8 @@ function renderSuggestions() {
   el.innerHTML = html;
   const ws = $("#w-money-save");
   if (ws) ws.onclick = () => saveMoney(+$("#w-money").value);
+  const as = $("#amt-save");
+  if (as) as.onclick = () => saveMoney(+$("#amt-today").value);
 }
 
 function openMarkDialog(kind, sym) {

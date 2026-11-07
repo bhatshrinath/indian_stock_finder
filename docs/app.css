@@ -214,3 +214,7 @@ dialog .card { border: 0; box-shadow: none; padding: 0; }
 .sugg .do { margin: 8px 0 4px; }
 .sugg .badge { white-space: normal; text-align: right; }
 .plan-card { border: 2px solid var(--brand); }
+.amount-box .amount-row { display: flex; gap: 8px; margin: 6px 0 4px; }
+.amount-box input { flex: 1; min-width: 0; font: inherit; font-size: 20px; font-weight: 700; padding: 8px 12px; min-height: 50px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); }
+.amount-box .pill-row { margin: 6px 0 0; }
