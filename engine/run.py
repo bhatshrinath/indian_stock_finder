@@ -756,9 +756,20 @@ def run_morning(args) -> None:
         notify.send("Good morning - today's plan", msg)
 
 
+def run_test() -> int:
+    """Send one test message to every configured alert channel (manual workflow)."""
+    chans = notify.channels()
+    if not chans:
+        log.error("No alert channel is set up. Add the NTFY_TOPIC secret (or Telegram / Gmail secrets) and run again.")
+        return 1
+    notify.send("Stock Finder: test alert", "Alerts are working. You will get the plan for the next day each evening, a reminder at 8:45 AM when there is something to buy or sell, and SELL NOW alerts during market hours.", "high")
+    log.info("Test alert sent via: %s", ", ".join(chans))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["full", "live", "morning"], default="full")
+    ap.add_argument("--mode", choices=["full", "live", "morning", "test"], default="full")
     ap.add_argument("--demo", action="store_true", help="synthetic data (offline testing)")
     ap.add_argument("--no-news", action="store_true")
     ap.add_argument("--no-backtest", action="store_true")
@@ -774,6 +785,8 @@ def main(argv=None) -> int:
         run_full(args)
     elif args.mode == "morning":
         run_morning(args)
+    elif args.mode == "test":
+        return run_test()
     else:
         run_live(args)
     return 0
