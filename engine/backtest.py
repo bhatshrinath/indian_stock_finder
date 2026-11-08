@@ -240,33 +240,36 @@ def _spread(rets: list[float], stopped: int = 0) -> dict:
             "stopped_pct": round(100 * stopped / len(a), 1)}
 
 
-def _hold_path(opens, lows, closes, regime, e: int, h: int, trail: float, price_in: float):
-    """Walk one holding: trailing safety price (trail below the highest close), and
-    sold when the whole market turns down (regime 0). Returns (return, ended_early)."""
+def _hold_path(opens, lows, closes, regime, e: int, h: int, trail, price_in: float, out=None):
+    """Walk one holding. Sold when (a) it falls `trail` below its highest close (None = no such rule),
+    (b) the whole market turns down (regime 0), or (c) `out[j]` flags it as no longer among the
+    strongest at a month end. Exits at a stop/at the next open. Returns (return, ended_early)."""
     n = len(closes)
     hi = price_in
-    stop = price_in * (1 - trail)
+    stop = price_in * (1 - trail) if trail else -np.inf
     last = min(e + h - 1, n - 1)
     for j in range(e, last + 1):
         lo = lows[j] if np.isfinite(lows[j]) else closes[j]
-        if lo <= stop:
+        if trail and lo <= stop:
             px_out = stop if (j == e or not np.isfinite(opens[j]) or opens[j] > stop) else opens[j]
             return px_out / price_in - 1 - config.ROUND_TRIP_COST, True
         hi = max(hi, closes[j])
-        stop = max(stop, hi * (1 - trail))
-        if regime[j] == 0 and j < last:                  # market turned down: sell at the next open
+        if trail:
+            stop = max(stop, hi * (1 - trail))
+        if j < last and (regime[j] == 0 or (out is not None and out[j])):
             nxt = opens[j + 1] if np.isfinite(opens[j + 1]) else closes[j]
             return nxt / price_in - 1 - config.ROUND_TRIP_COST, True
     return closes[last] / price_in - 1 - config.ROUND_TRIP_COST, False
 
 
 def holding_outcomes(f: Features, industries: dict[str, str], universe: set, n: int = 3,
-                     horizons: tuple[int, ...] = (126, 252), stock_trail: float = 0.12,
-                     fund_trail: float = 0.10) -> dict:
-    """What happened to holdings the app would have suggested (Nifty 50, one per sector),
-    held for ~6 and ~12 months with the same safety rules the app uses: a safety price that
-    rises with the price (12% below the highest close; 10% for the index fund) and selling
-    everything while the market is falling. Past results, not a promise."""
+                     horizons: tuple[int, ...] = (126, 252), stock_trail=config.HOLD_STOCK_TRAIL,
+                     fund_trail=config.HOLD_FUND_TRAIL, monthly_check: bool = config.HOLD_MONTHLY_CHECK,
+                     keep_top: int = 6) -> dict:
+    """What happened to holdings the app would have suggested (Nifty 50, one per sector), held for
+    ~6 and ~12 months with the app's safety rules: optional safety price that rises with the price,
+    selling everything while the market is falling, and (optionally) selling a stock that is no
+    longer among the strongest at a month end. Past results, not a promise."""
     c = f.close
     C, O, L = (x.to_numpy(dtype=float) for x in (c, f.open, f.low))
     reg = f.regime.to_numpy()
@@ -274,22 +277,31 @@ def holding_outcomes(f: Features, industries: dict[str, str], universe: set, n: 
     dates = c.index
     month_ends = [i for i in range(len(dates) - 1)
                   if dates[i].month != dates[i + 1].month and i >= config.LT_MIN_HISTORY]
-    out_stock = {h: [] for h in horizons}
-    stopped_stock = {h: 0 for h in horizons}
+    scs, tops = {}, {}
     for i in month_ends:
-        if reg[i] == 0:
-            continue                                      # the app buys nothing while the market is falling
         sc = momentum_scores(f, at=i)
         if sc.empty:
             continue
         sc = sc[sc.index.isin(list(universe))]
-        for s in pick_portfolio(sc, industries, n, [], max_per_industry=1):
+        scs[i] = sc
+        tops[i] = set(pick_portfolio(sc, industries, keep_top, [], max_per_industry=1))
+    out_stock = {h: [] for h in horizons}
+    stopped_stock = {h: 0 for h in horizons}
+    for i in month_ends:
+        if reg[i] == 0 or i not in scs:
+            continue                                      # the app buys nothing while the market is falling
+        for s in pick_portfolio(scs[i], industries, n, [], max_per_industry=1):
             k, e = cols[s], i + 1
             entry = O[e, k] if np.isfinite(O[e, k]) else C[i, k]
+            flags = None
+            if monthly_check:
+                flags = np.zeros(len(dates), dtype=bool)
+                for j, ts in tops.items():
+                    flags[j] = j > i and s not in ts
             for h in horizons:
                 if e + h - 1 > len(dates) - 1:
                     continue                              # window not finished yet
-                r, early = _hold_path(O[:, k], L[:, k], C[:, k], reg, e, h, stock_trail, entry)
+                r, early = _hold_path(O[:, k], L[:, k], C[:, k], reg, e, h, stock_trail, entry, flags)
                 out_stock[h].append(r)
                 stopped_stock[h] += early
     # the Nifty 50 index fund held the same way (index closes / lows)
@@ -312,7 +324,8 @@ def holding_outcomes(f: Features, industries: dict[str, str], universe: set, n: 
     return {
         "stock": {names.get(h, f"{h}d"): _spread(out_stock[h], stopped_stock[h]) for h in horizons},
         "fund": {names.get(h, f"{h}d"): _spread(out_fund[h], stopped_fund[h]) for h in horizons},
-        "stock_trail_pct": stock_trail * 100, "fund_trail_pct": fund_trail * 100,
+        "stock_trail_pct": (stock_trail or 0) * 100, "fund_trail_pct": (fund_trail or 0) * 100,
+        "monthly_check": monthly_check,
         "note": "Windows overlap and cover only about 4 years, so treat the ranges as a rough guide.",
     }
 

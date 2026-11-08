@@ -116,6 +116,30 @@ def main() -> None:
             yearly.setdefault(b["d"][:4], [a["p"], b["p"]])[1] = b["p"]
         rows.append(f"{label} | {r['cagr']}% (Nifty {r['bench_cagr']}%) | {r['max_drawdown']}% (Nifty {r['bench_max_drawdown']}%) | "
                     f"{r['pct_months_positive']}% | " + ", ".join(f"{y}: {100 * (v[1] / v[0] - 1):+.1f}%" for y, v in yearly.items()))
+    # ---- long-term holding RULES: what rule keeps gains without cutting winners short?
+    rows.append("HOLDING RULES (Nifty 50, 3 stocks) | horizon | n | made money | bad p10 | typical | good p75 | best p90 | mean | ended by rule")
+    for label, kw in (("12% rising safety price", dict(stock_trail=0.12, monthly_check=False)),
+                      ("15% rising safety price", dict(stock_trail=0.15, monthly_check=False)),
+                      ("20% rising safety price", dict(stock_trail=0.20, monthly_check=False)),
+                      ("25% rising safety price", dict(stock_trail=0.25, monthly_check=False)),
+                      ("no stock stop (market guard only)", dict(stock_trail=None, monthly_check=False)),
+                      ("monthly check only", dict(stock_trail=None, monthly_check=True)),
+                      ("20% rising + monthly check", dict(stock_trail=0.20, monthly_check=True)),
+                      ("25% rising + monthly check", dict(stock_trail=0.25, monthly_check=True))):
+        o = backtest.holding_outcomes(f, inds, n50, **kw)
+        for hz in ("6m", "12m"):
+            r_ = o["stock"][hz]
+            if r_.get("n"):
+                rows.append(f"{label} | {hz} | {r_['n']} | {r_['pct_positive']}% | {r_['p10']}% | {r_['median']}% | "
+                            f"{r_['p75']}% | {r_['p90']}% | {r_['mean']}% | {r_['stopped_pct']}%")
+    for label, ft in (("INDEX FUND 10% rising safety price", 0.10), ("INDEX FUND 15% rising", 0.15),
+                      ("INDEX FUND 20% rising", 0.20), ("INDEX FUND no stop (market guard only)", None)):
+        o = backtest.holding_outcomes(f, inds, n50, fund_trail=ft)
+        for hz in ("6m", "12m"):
+            r_ = o["fund"][hz]
+            if r_.get("n"):
+                rows.append(f"{label} | {hz} | {r_['n']} | {r_['pct_positive']}% | {r_['p10']}% | {r_['median']}% | "
+                            f"{r_['p75']}% | {r_['p90']}% | {r_['mean']}% | {r_['stopped_pct']}%")
     print("::notice title=safe-study::" + "%0A".join(rows), flush=True)
     print("\n".join(rows))
 

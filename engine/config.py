@@ -72,6 +72,13 @@ TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT") or 20000)
 # realistic total cost for a trade of TRADE_AMOUNT (percent costs + the fixed DP charge)
 ROUND_TRIP_COST = BASE_COST + DP_CHARGE_RS / TRADE_AMOUNT
 
+# ---------------------------------------------------------------- long-term holding rules
+# Safety price that rises with the price (fraction below the highest close; None = no such rule),
+# and the monthly "is it still among the strongest?" check. Chosen from the study in engine/research.py.
+HOLD_STOCK_TRAIL = 0.12
+HOLD_FUND_TRAIL = 0.10
+HOLD_MONTHLY_CHECK = False
+
 # ---------------------------------------------------------------- alerts/AI (optional)
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
