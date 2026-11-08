@@ -75,7 +75,7 @@ ROUND_TRIP_COST = BASE_COST + DP_CHARGE_RS / TRADE_AMOUNT
 # ---------------------------------------------------------------- long-term holding rules
 # Safety price that rises with the price (fraction below the highest close; None = no such rule),
 # and the monthly "is it still among the strongest?" check. Chosen from the study in engine/research.py.
-HOLD_STOCK_TRAIL = 0.12
+HOLD_STOCK_TRAIL = 0.25   # wide: tight stops (12%) sold winners on ordinary dips (study, real data)
 HOLD_FUND_TRAIL = 0.10
 HOLD_MONTHLY_CHECK = False
 

@@ -26,7 +26,7 @@ The share counts in phone messages use `TRADE_AMOUNT` (default ₹20,000; set th
 Stock, how many shares, the most to pay, the sell-if-it-falls price, **how long to hold**, and **what to expect**: a bad case, a typical case
 and a good case in rupees (with the sell price), taken from similar past cases after charges, plus exact steps to place the order
 (NSE, Delivery, Limit order, then a stop-loss/GTT sell order). Long-term holdings also get a safety price that **rises as the price rises**
-(12% below the highest price since buying; 10% for the index fund), so gains are protected. Suggestions are valid for 3 trading days and are re-checked every weekday evening.
+(25% below the highest price since buying; 10% for the index fund), so gains are protected. A tighter 12% rule was tested on real data and rejected: it sold winners on ordinary dips (typical result +0.6% against +4.8% for the 25% rule, with no better worst case). Suggestions are valid for 3 trading days and are re-checked every weekday evening.
 
 ### Honest expectations with ₹20,000 (5 years of real prices, after all charges)
 | | |

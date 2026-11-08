@@ -1033,7 +1033,7 @@ function positionStatus(p) {
     }
   }
   if (p.kind === "long_term") {
-    // the safety price rises with the price: always 12% (10% for funds) below the highest price since buying
+    // the safety price rises with the price: always 25% (10% for the index fund) below the highest price since buying
     const trailStop = Math.round((p.high ?? p.price) * (1 - trailPct(p)) * 100) / 100;
     effectiveStop = Math.max(effectiveStop ?? 0, trailStop);
   }
@@ -1500,9 +1500,9 @@ function renderPlan() {
 const addDays = (iso, n) => { const d = new Date(iso); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 
 // Protected plan: the stock part is sized so that, if every stock fell to its
-// safety price (at most 12% below), one year of interest on the safe part
+// safety price (at most 25% below), one year of interest on the safe part
 // (FD / liquid fund, ~6.5%) would cover it.
-const SAFE_YIELD = 0.065, MAX_STOCK_LOSS = 0.12, MIN_SHORT_TERM = 15000;
+const SAFE_YIELD = 0.065, MAX_STOCK_LOSS = 0.25, MIN_SHORT_TERM = 15000;
 const MIN_PER_STOCK = 1500, TWO_STOCKS_FROM = 6000;   // below these, charges eat too much
 
 function moneyPlan() {
@@ -1642,7 +1642,11 @@ function protectedSuggestions() {
 const sgn = (v) => (v >= 0 ? "+" : "−");
 const moneySigned = (v) => `${sgn(v)}${inr(Math.abs(v))}`;
 const isFundSym = (sym) => sym === "NIFTYBEES" || sym === "GOLDBEES";
-const trailPct = (p) => (isFundSym(p.symbol) ? 0.10 : 0.12);
+// safety-price width comes from the engine's tested rule (25% for shares, 10% for the index fund)
+const trailPct = (p) => {
+  const H = S.latest?.expect?.holding || {};
+  return (isFundSym(p.symbol) ? H.fund_trail_pct ?? 10 : H.stock_trail_pct ?? 25) / 100;
+};
 
 function addBusinessDays(iso, n) {
   const d = new Date(iso + "T00:00:00Z");
@@ -1699,7 +1703,7 @@ function orderDetails(x, qty) {
   const maxLoss = Math.max(0, qty * (x.max_entry - x.stop));
   const valid = L.data_date ? addBusinessDays(L.data_date, 3) : null;
   const trail = x.kind === "long_term"
-    ? `<div class="line"><span class="ic">⬆</span><div>The safety price <b>rises as the price rises</b>: it always stays ${isFundSym(x.symbol) ? 10 : 12}% below the highest price since you bought. My Stocks shows the current one. Move your sell order up when it changes.</div></div>` : "";
+    ? `<div class="line"><span class="ic">⬆</span><div>The safety price <b>rises as the price rises</b>: it always stays ${Math.round(trailPct(x) * 100)}% below the highest price since you bought. My Stocks shows the current one. Move your sell order up when it changes.</div></div>` : "";
   return `<details><summary>All the trade details</summary>
     <div class="line"><span class="ic">📅</span><div>Suggested on <b>${esc(fmtDate(L.data_date))}</b>. Valid for 3 trading days${valid ? ` (until <b>${esc(fmtDate(valid))}</b>)` : ""}. After that, use the newer list.</div></div>
     <div class="line"><span class="ic">🧾</span><div><b>How to place it in your broker app:</b>

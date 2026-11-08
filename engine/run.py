@@ -256,8 +256,8 @@ def safe_long_term(f: Features, uni: pd.DataFrame, use_fundamentals: bool, n: in
         out.append({"symbol": s, "name": names.get(s, s), "industry": inds.get(s, ""), "kind": "long_term",
                     "large": True, "price": r2(price),
                     "trend": trend_facts(f, s),
-                    # very low risk: never more than 12% below today's price (or the 200-day average if closer)
-                    "review_below": r2(max(float(f.sma200[s].iloc[-1]), price * 0.88)),
+                    # wide safety price against a one-company disaster (tight ones sold winners on ordinary dips)
+                    "review_below": r2(price * (1 - config.HOLD_STOCK_TRAIL)),
                     "ret_12m": r2(f.ret252[s].iloc[-1] * 100), "score": r2(sc.loc[s, "score"]),
                     "fundamentals": funda.get(s, {})})
         if len(out) >= n:
@@ -313,7 +313,7 @@ def fund_info(demo: bool) -> list[dict]:
     """Exchange-traded funds for diversification (bought like a share on NSE)."""
     if demo:
         return [{"symbol": s, "name": n, "type": t, "kind": "long_term", "size": "fund", "price": pr,
-                 "review_below": round(pr * 0.9, 2), "uptrend": True}
+                 "review_below": round(pr * (1 - config.HOLD_FUND_TRAIL), 2), "uptrend": True}
                 for (s, n, t), pr in zip(FUNDS, (285.0, 92.0))]
     try:
         p = data.load_yfinance([s for s, _, _ in FUNDS], period="2y")
@@ -331,7 +331,7 @@ def fund_info(demo: bool) -> list[dict]:
             continue
         price, sma200 = float(c.iloc[-1]), float(c.rolling(200).mean().iloc[-1])
         out.append({"symbol": s, "name": n, "type": t, "kind": "long_term", "size": "fund", "price": r2(price),
-                    "review_below": r2(max(sma200, price * 0.90)), "uptrend": price > sma200,
+                    "review_below": r2(price * (1 - config.HOLD_FUND_TRAIL)), "uptrend": price > sma200,
                     "ret_12m": r2((price / float(c.iloc[-253]) - 1) * 100) if len(c) > 253 else None})
     return out
 
