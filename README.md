@@ -22,6 +22,12 @@ Typical trade: bought at 9:15 AM, sold within about 5 days. No method is ever 10
 the edge comes from many small, controlled trades. To switch safe mode off (all ideas), add the repository variable `SAFE_MODE` = `off`.
 The share counts in phone messages use `TRADE_AMOUNT` (default ₹20,000; set the repository variable to his real amount).
 
+### What every suggestion shows
+Stock, how many shares, the most to pay, the sell-if-it-falls price, **how long to hold**, and **what to expect**: a bad case, a typical case
+and a good case in rupees (with the sell price), taken from similar past cases after charges, plus exact steps to place the order
+(NSE, Delivery, Limit order, then a stop-loss/GTT sell order). Long-term holdings also get a safety price that **rises as the price rises**
+(12% below the highest price since buying; 10% for the index fund), so gains are protected. Suggestions are valid for 3 trading days and are re-checked every weekday evening.
+
 ### Honest expectations with ₹20,000 (5 years of real prices, after all charges)
 | | |
 |---|---|
@@ -41,6 +47,7 @@ The live track record on the Results screen will show real results as they come 
 | | |
 |---|---|
 | **Market mood** | Is it a good time to buy at all? (Bullish / Cautious / Bearish, based on Nifty's 50 and 200-day averages and market breadth) |
+| **Live Intelligence** | Near-live price, change, VWAP, 5/15-minute momentum, session range, quote freshness, and distance to each stop/target — without turning watch-only stocks into buys |
 | **Swing ideas** | Specific stocks to buy at the next open, with the **buy limit, stop-loss, target, how many shares to buy for your capital, and the maximum loss in ₹** |
 | **Long-term portfolio** | 15 strong large/mid-cap stocks to hold, reviewed monthly, with quantities for your amount and a staged investing plan |
 | **Proof** | Backtests of every rule (after costs) **plus a live track record** of every idea the app has ever given, with real outcomes |
@@ -80,8 +87,10 @@ Open-source projects reviewed for ideas: [PKScreener](https://github.com/pkjmesr
 [KJStockScreener](https://github.com/85599/KJStockScreener). This app differs from them in three ways:
 it **backtests and live-tracks every rule it recommends**, it **sizes positions for you**, and it needs **no server**.
 
-**Data:** Yahoo Finance via `yfinance` (free, split-adjusted daily data), with NSE's official daily files used for delivery % and
-Nifty P/E when reachable, and as a backup price source. Free data can occasionally be delayed or wrong, so check the price in your broker app before placing an order.
+**Data:** Yahoo Finance via `yfinance` (free, split-adjusted daily data plus 1-minute bars for the monitored live list), with NSE's official daily files used for delivery % and
+Nifty P/E when reachable, and as a backup price source. The 1-minute bars are summarised into change, VWAP, short momentum and session-range position, then published about every 15 minutes.
+This is **near-live, not exchange-grade real time**: GitHub scheduling, Yahoo and Pages deployment can all add delay. NSE distributes licensed real-time/tick data through
+[its data service and authorised vendors](https://www.nseindia.com/static/market-data/real-time-data-subscription). Always confirm the executable price in your broker app.
 
 ---
 
@@ -100,7 +109,7 @@ After that it runs by itself:
 | Workflow | When (IST) | What it does |
 |---|---|---|
 | **Daily scan** | 6:15 PM, Mon-Fri | Downloads 5 years of data, runs all backtests, finds tomorrow's ideas, updates the long-term portfolio, reads news, records the track record, sends alerts |
-| **Live prices** | Every 15 min, 9:15 AM-3:30 PM | Refreshes prices in the app and alerts if a recommended trade touches its stop-loss or target |
+| **Live prices** | About every 15 min, 9:15 AM-3:30 PM | Publishes quote freshness plus intraday price/VWAP/momentum context, and alerts only from a fresh current-session quote if a recommended trade touches its stop-loss or target |
 | **Morning reminder** | 8:45 AM, Mon-Fri | Sends today's buy list (buy limit, stop-loss, target) to your phone before the market opens (needs an alert channel below) |
 | **Tests** | On code changes | Checks the engine (including a test that the backtest never "peeks" at future prices) |
 
@@ -181,6 +190,7 @@ cd docs && python -m http.server 8000             # view the app at http://local
 engine/            Python engine (runs in GitHub Actions)
   config.py        all tunable settings (costs, risk, universe, filters)
   data.py          Yahoo Finance / NSE bhavcopy / demo data loaders
+  live_analysis.py Quote freshness, feed health, coverage and stale-data protection
   strategies.py    market regime, swing setups, momentum scoring
   backtest.py      trade-by-trade swing backtest + monthly portfolio backtest
   tracker.py       live track record of every recommendation

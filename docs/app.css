@@ -218,3 +218,55 @@ dialog .card { border: 0; box-shadow: none; padding: 0; }
 .amount-box input { flex: 1; min-width: 0; font: inherit; font-size: 20px; font-weight: 700; padding: 8px 12px; min-height: 50px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); }
 .amount-box .pill-row { margin: 6px 0 0; }
+
+/* live intelligence: additive expert view under More */
+.feed-card { border-left: 6px solid var(--muted); }
+.feed-card.good { border-left-color: var(--up); background: var(--up-bg); }
+.feed-card.warn { border-left-color: var(--warn); background: var(--warn-bg); }
+.feed-card.bad { border-left-color: var(--down); background: var(--down-bg); }
+.feed-card.info { border-left-color: var(--brand); background: var(--info-bg); }
+.feed-title { font-size: 20px; font-weight: 800; }
+.feed-led { color: var(--muted); }
+.feed-card.good .feed-led { color: var(--up); animation: pulse 2s infinite; }
+.feed-card.warn .feed-led { color: var(--warn); }
+.feed-card.bad .feed-led { color: var(--down); }
+.btn:disabled { cursor: wait; opacity: .6; }
+.live-grid { align-items: stretch; }
+.live-grid > .card { margin-bottom: 0; }
+.live-quote { border-left: 5px solid var(--muted); }
+.live-quote.good { border-left-color: var(--up); }
+.live-quote.warn { border-left-color: var(--warn); }
+.live-quote.bad { border-left-color: var(--down); }
+.live-quote.info { border-left-color: var(--brand); }
+.quote-price { margin: 10px 0 4px; font-size: 25px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.quote-price > span, .live-change { font-size: 15px; font-weight: 700; }
+.live-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 10px 0; }
+.live-metrics > div { min-width: 0; padding: 8px; border-radius: 9px; background: var(--bg); }
+.live-metrics span { display: block; color: var(--muted); font-size: 12px; }
+.live-metrics b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+.live-kv { margin-bottom: 8px; }
+.quote-asof { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.factors { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.factor { display: inline-flex; align-items: center; gap: 3px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; }
+.factor.pass { color: var(--up); background: var(--up-bg); border-color: transparent; }
+.factor.fail { color: var(--down); background: var(--down-bg); border-color: transparent; }
+.factor.neutral { color: var(--muted); }
+.strategy-health.good { border-top: 4px solid var(--up); }
+.strategy-health.warn { border-top: 4px solid var(--warn); }
+.strategy-health.info { border-top: 4px solid var(--brand); }
+@media (max-width: 420px) {
+  .live-metrics { grid-template-columns: 1fr; }
+  .live-metrics > div { display: flex; justify-content: space-between; align-items: baseline; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status .dot.live, .feed-card.good .feed-led { animation: none; }
+}
+
+/* expected outcomes + trade details */
+.expect { margin: 10px 0 6px; padding: 10px; border-radius: 10px; background: var(--info-bg); }
+.expect-head { font-weight: 700; margin-bottom: 6px; }
+.expect-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.expect-table th, .expect-table td { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.expect-table th { font-size: 14px; }
+ol.steps { padding-left: 20px; margin: 6px 0; }
+ol.steps li { margin: 4px 0; }

@@ -158,6 +158,13 @@ def _stats(df: pd.DataFrame) -> dict:
         "expectancy_r": round(df.r.mean(), 2),
         "avg_days": round(df.days.mean(), 1),
         "max_losing_streak": int(mx),
+        # spread of outcomes (percent): 1 in 10 was this bad or worse, 1 in 4 / 1 in 10 was this good or better
+        "p10_return": round(100 * df.ret.quantile(0.10), 2),
+        "p25_return": round(100 * df.ret.quantile(0.25), 2),
+        "p75_return": round(100 * df.ret.quantile(0.75), 2),
+        "p90_return": round(100 * df.ret.quantile(0.90), 2),
+        "days_median": int(df.days.median()),
+        "days_p90": int(df.days.quantile(0.90)),
     }
 
 
@@ -217,6 +224,96 @@ def portfolio_sim(f: Features, strat: SwingStrategy, money: float, slots: int = 
         "invested_pct_of_time": round(100 * invested_frac), "idle_income": round(idle_income),
         "yearly": [{"year": int(y), "profit": round(float(v))}
                    for y, v in df.groupby(df.exit_date.dt.year)["gain"].sum().items()],
+    }
+
+
+# ======================================================================= long-term holding outcomes
+def _spread(rets: list[float], stopped: int = 0) -> dict:
+    """Percentile summary (percent) of holding-period returns."""
+    if not rets:
+        return {"n": 0}
+    a = np.array(rets, dtype=float) * 100
+    return {"n": int(len(a)), "pct_positive": round(float((a > 0).mean() * 100), 1),
+            "p10": round(float(np.percentile(a, 10)), 1), "p25": round(float(np.percentile(a, 25)), 1),
+            "median": round(float(np.median(a)), 1), "p75": round(float(np.percentile(a, 75)), 1),
+            "p90": round(float(np.percentile(a, 90)), 1), "mean": round(float(a.mean()), 1),
+            "stopped_pct": round(100 * stopped / len(a), 1)}
+
+
+def _hold_path(opens, lows, closes, regime, e: int, h: int, trail: float, price_in: float):
+    """Walk one holding: trailing safety price (trail below the highest close), and
+    sold when the whole market turns down (regime 0). Returns (return, ended_early)."""
+    n = len(closes)
+    hi = price_in
+    stop = price_in * (1 - trail)
+    last = min(e + h - 1, n - 1)
+    for j in range(e, last + 1):
+        lo = lows[j] if np.isfinite(lows[j]) else closes[j]
+        if lo <= stop:
+            px_out = stop if (j == e or not np.isfinite(opens[j]) or opens[j] > stop) else opens[j]
+            return px_out / price_in - 1 - config.ROUND_TRIP_COST, True
+        hi = max(hi, closes[j])
+        stop = max(stop, hi * (1 - trail))
+        if regime[j] == 0 and j < last:                  # market turned down: sell at the next open
+            nxt = opens[j + 1] if np.isfinite(opens[j + 1]) else closes[j]
+            return nxt / price_in - 1 - config.ROUND_TRIP_COST, True
+    return closes[last] / price_in - 1 - config.ROUND_TRIP_COST, False
+
+
+def holding_outcomes(f: Features, industries: dict[str, str], universe: set, n: int = 3,
+                     horizons: tuple[int, ...] = (126, 252), stock_trail: float = 0.12,
+                     fund_trail: float = 0.10) -> dict:
+    """What happened to holdings the app would have suggested (Nifty 50, one per sector),
+    held for ~6 and ~12 months with the same safety rules the app uses: a safety price that
+    rises with the price (12% below the highest close; 10% for the index fund) and selling
+    everything while the market is falling. Past results, not a promise."""
+    c = f.close
+    C, O, L = (x.to_numpy(dtype=float) for x in (c, f.open, f.low))
+    reg = f.regime.to_numpy()
+    cols = {s: k for k, s in enumerate(c.columns)}
+    dates = c.index
+    month_ends = [i for i in range(len(dates) - 1)
+                  if dates[i].month != dates[i + 1].month and i >= config.LT_MIN_HISTORY]
+    out_stock = {h: [] for h in horizons}
+    stopped_stock = {h: 0 for h in horizons}
+    for i in month_ends:
+        if reg[i] == 0:
+            continue                                      # the app buys nothing while the market is falling
+        sc = momentum_scores(f, at=i)
+        if sc.empty:
+            continue
+        sc = sc[sc.index.isin(list(universe))]
+        for s in pick_portfolio(sc, industries, n, [], max_per_industry=1):
+            k, e = cols[s], i + 1
+            entry = O[e, k] if np.isfinite(O[e, k]) else C[i, k]
+            for h in horizons:
+                if e + h - 1 > len(dates) - 1:
+                    continue                              # window not finished yet
+                r, early = _hold_path(O[:, k], L[:, k], C[:, k], reg, e, h, stock_trail, entry)
+                out_stock[h].append(r)
+                stopped_stock[h] += early
+    # the Nifty 50 index fund held the same way (index closes / lows)
+    ix = f.ix.to_numpy(dtype=float)
+    idx_low = getattr(f.p, "index_low", None)
+    ixl = idx_low.to_numpy(dtype=float) if idx_low is not None else ix
+    out_fund = {h: [] for h in horizons}
+    stopped_fund = {h: 0 for h in horizons}
+    for i in month_ends:
+        if reg[i] == 0:
+            continue
+        e = i + 1
+        for h in horizons:
+            if e + h - 1 > len(dates) - 1:
+                continue
+            r, early = _hold_path(ix, ixl, ix, reg, e, h, fund_trail, ix[e])
+            out_fund[h].append(r)
+            stopped_fund[h] += early
+    names = {126: "6m", 252: "12m"}
+    return {
+        "stock": {names.get(h, f"{h}d"): _spread(out_stock[h], stopped_stock[h]) for h in horizons},
+        "fund": {names.get(h, f"{h}d"): _spread(out_fund[h], stopped_fund[h]) for h in horizons},
+        "stock_trail_pct": stock_trail * 100, "fund_trail_pct": fund_trail * 100,
+        "note": "Windows overlap and cover only about 4 years, so treat the ranges as a rough guide.",
     }
 
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from io import StringIO
 
 import numpy as np
@@ -25,6 +25,7 @@ from .universe import yahoo_ticker
 log = logging.getLogger(__name__)
 
 IST_OFFSET = timedelta(hours=5, minutes=30)
+LIVE_FRESH_SECONDS = 20 * 60
 
 
 def now_ist() -> datetime:
@@ -179,41 +180,198 @@ def drop_incomplete_tail(p: Prices, min_coverage: float = 0.6) -> Prices:
     return p
 
 
+def _number(value, digits=2):
+    """Finite float rounded for JSON, or None for a missing market-data value."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(value, digits) if np.isfinite(value) else None
+
+
+def _as_ist_index(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalise a Yahoo history frame to a timezone-aware IST index."""
+    out = frame.copy()
+    idx = pd.DatetimeIndex(pd.to_datetime(out.index))
+    if idx.tz is None:
+        idx = idx.tz_localize("Asia/Kolkata")
+    else:
+        idx = idx.tz_convert("Asia/Kolkata")
+    out.index = idx
+    return out[~out.index.duplicated(keep="last")].sort_index()
+
+
+def intraday_quote(history: pd.DataFrame, now: datetime | None = None) -> dict | None:
+    """Convert one ticker's 1-minute history into a compact session snapshot.
+
+    This function is deliberately pure so quote freshness and all displayed
+    intraday metrics can be tested without contacting a data provider.
+    """
+    if history is None or history.empty or "Close" not in history:
+        return None
+    h = _as_ist_index(history)
+    h = h[h["Close"].notna()].between_time("09:15", "15:30")
+    if h.empty:
+        return None
+
+    session_date = h.index[-1].date()
+    current = h[np.asarray(h.index.date) == session_date]
+    if current.empty:
+        return None
+    previous = h[np.asarray(h.index.date) < session_date]
+
+    close = pd.to_numeric(current["Close"], errors="coerce").dropna()
+    if close.empty:
+        return None
+    latest_at = close.index[-1]
+    price = float(close.iloc[-1])
+    open_ = _number(current["Open"].dropna().iloc[0]) if "Open" in current and current["Open"].notna().any() else None
+    high = _number(pd.to_numeric(current.get("High"), errors="coerce").max()) if "High" in current else None
+    low = _number(pd.to_numeric(current.get("Low"), errors="coerce").min()) if "Low" in current else None
+    prev = _number(pd.to_numeric(previous["Close"], errors="coerce").dropna().iloc[-1]) \
+        if not previous.empty and previous["Close"].notna().any() else None
+
+    volume = pd.to_numeric(current.get("Volume", pd.Series(index=current.index, dtype=float)),
+                           errors="coerce").fillna(0).clip(lower=0)
+    total_volume = float(volume.sum())
+    vwap = None
+    if total_volume > 0 and {"High", "Low", "Close"}.issubset(current.columns):
+        typical = (pd.to_numeric(current["High"], errors="coerce")
+                   + pd.to_numeric(current["Low"], errors="coerce")
+                   + pd.to_numeric(current["Close"], errors="coerce")) / 3
+        valid = typical.notna() & volume.gt(0)
+        if valid.any():
+            vwap = _number((typical[valid] * volume[valid]).sum() / volume[valid].sum())
+
+    def return_over(minutes: int):
+        before = close[close.index <= latest_at - pd.Timedelta(minutes=minutes)]
+        if before.empty or not before.iloc[-1]:
+            return None
+        return _number((price / float(before.iloc[-1]) - 1) * 100)
+
+    now_ts = pd.Timestamp(now or datetime.now(timezone.utc))
+    if now_ts.tz is None:
+        now_ts = now_ts.tz_localize("UTC")
+    else:
+        now_ts = now_ts.tz_convert("UTC")
+    latest_utc = latest_at.tz_convert("UTC")
+    delay = max(0, int((now_ts - latest_utc).total_seconds()))
+    today_ist = now_ts.tz_convert("Asia/Kolkata").date()
+    fresh = session_date == today_ist and delay <= LIVE_FRESH_SECONDS
+    change = price - prev if prev is not None else None
+    day_range = (high - low) if high is not None and low is not None else None
+    range_position = ((price - low) / day_range * 100) if day_range and day_range > 0 else None
+
+    return {
+        "price": _number(price),
+        "open": open_,
+        "prev_close": prev,
+        "day_high": high,
+        "day_low": low,
+        "date": session_date.isoformat(),
+        "asof": latest_utc.isoformat(),
+        "source": "Yahoo Finance intraday",
+        "is_intraday": True,
+        "is_fresh": fresh,
+        "stale": not fresh,
+        "delay_seconds": delay,
+        "change": _number(change),
+        "change_pct": _number(change / prev * 100) if change is not None and prev else None,
+        "volume": int(total_volume),
+        "vwap": vwap,
+        "return_5m": return_over(5),
+        "return_15m": return_over(15),
+        "range_position": _number(range_position, 1),
+    }
+
+
+def daily_quote(history: pd.DataFrame, now: datetime | None = None) -> dict | None:
+    """Compatibility fallback when Yahoo does not return intraday bars.
+
+    Daily bars are always marked stale: they are useful for display, but must
+    never be allowed to fire an intraday stop/target notification.
+    """
+    if history is None or history.empty or "Close" not in history:
+        return None
+    h = _as_ist_index(history)
+    close = pd.to_numeric(h["Close"], errors="coerce").dropna()
+    if close.empty:
+        return None
+    last_at = close.index[-1]
+    row = h.loc[last_at]
+    price = float(close.iloc[-1])
+    prev = _number(close.iloc[-2]) if len(close) > 1 else None
+    high = _number(row.get("High"))
+    low = _number(row.get("Low"))
+    volume = _number(row.get("Volume"), 0) or 0
+    change = price - prev if prev is not None else None
+    now_ts = pd.Timestamp(now or datetime.now(timezone.utc))
+    now_ts = now_ts.tz_localize("UTC") if now_ts.tz is None else now_ts.tz_convert("UTC")
+    session_close = pd.Timestamp.combine(last_at.date(), pd.Timestamp("15:30").time()) \
+        .tz_localize("Asia/Kolkata").tz_convert("UTC")
+    # Yahoo can expose today's still-forming daily candle before the close.
+    # Never label that fallback with a timestamp in the future.
+    asof = min(session_close, now_ts)
+    return {
+        "price": _number(price),
+        "open": _number(row.get("Open")),
+        "prev_close": prev,
+        "day_high": high,
+        "day_low": low,
+        "date": last_at.date().isoformat(),
+        "asof": asof.isoformat(),
+        "source": "Yahoo Finance daily fallback",
+        "is_intraday": False,
+        "is_fresh": False,
+        "stale": True,
+        "delay_seconds": max(0, int((now_ts - asof).total_seconds())),
+        "change": _number(change),
+        "change_pct": _number(change / prev * 100) if change is not None and prev else None,
+        "volume": int(volume),
+        "vwap": None,
+        "return_5m": None,
+        "return_15m": None,
+        "range_position": _number((price - low) / (high - low) * 100, 1)
+        if high is not None and low is not None and high > low else None,
+    }
+
+
 def live_quotes(symbols: list[str]) -> dict[str, dict]:
-    """Latest intraday price for a handful of symbols (used by the live monitor)."""
+    """Near-live 1-minute session snapshots for the monitored symbols.
+
+    Yahoo is a free, best-effort source rather than an exchange-grade feed.  A
+    daily-bar fallback keeps the screen informative during provider gaps, while
+    explicit freshness fields prevent that fallback from triggering alerts.
+    """
     out: dict[str, dict] = {}
-    if not symbols:
-        return out
     try:
         import yfinance as yf
         from concurrent.futures import ThreadPoolExecutor
-        tickers = [yahoo_ticker(s) for s in symbols] + [config.INDEX_SYMBOL]
+        tickers = list(dict.fromkeys([yahoo_ticker(s) for s in symbols] + [config.INDEX_SYMBOL]))
 
-        # one ticker at a time: Yahoo's batch download can omit the current session
+        # One ticker at a time: Yahoo's batch endpoint often omits the current
+        # session. Fetch the small monitored list concurrently and fall back to
+        # a daily candle only when no minute history is available.
         def one(t):
             try:
-                return t, yf.Ticker(t).history(period="5d", interval="1d", auto_adjust=True)
+                ticker = yf.Ticker(t)
+                minute = ticker.history(period="5d", interval="1m", auto_adjust=True, prepost=False)
+                quote = intraday_quote(minute)
+                if quote is None:
+                    daily = ticker.history(period="5d", interval="1d", auto_adjust=True)
+                    quote = daily_quote(daily)
+                return t, quote
             except Exception:
                 return t, None
         with ThreadPoolExecutor(max_workers=8) as ex:
             hist = dict(ex.map(one, tickers))
         for t in tickers:
             try:
-                h = hist.get(t)
-                if h is None or h.empty:
-                    continue
-                c, hi, lo = h["Close"].dropna(), h["High"].dropna(), h["Low"].dropna()
-                if c.empty:
+                quote = hist.get(t)
+                if quote is None:
                     continue
                 key = "NIFTY" if t == config.INDEX_SYMBOL else t.replace(".NS", "")
-                out[key] = {
-                    "price": round(float(c.iloc[-1]), 2),
-                    "open": round(float(h["Open"].dropna().iloc[-1]), 2) if "Open" in h else None,
-                    "prev_close": round(float(c.iloc[-2]), 2) if len(c) > 1 else None,
-                    "day_high": round(float(hi.iloc[-1]), 2),
-                    "day_low": round(float(lo.iloc[-1]), 2),
-                    "date": str(c.index[-1].date()),
-                }
+                out[key] = quote
             except Exception:
                 continue
     except Exception as exc:

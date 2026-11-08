@@ -1,9 +1,11 @@
 """Run with:  python -m pytest -q"""
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from engine import backtest, config, data, tracker
+from engine import backtest, config, data, live_analysis, tracker
 from engine.strategies import SWING_STRATEGIES, Features, momentum_scores, pick_portfolio
 
 SYMS = [f"S{i:03d}" for i in range(80)]
@@ -166,12 +168,15 @@ def test_safe_gate_rules():
 def test_plan_and_message():
     from engine.run import build_plan, plan_message
     tr = {"trades": [
-        {"symbol": "ITC", "name": "ITC Ltd.", "strategy": "safe_dip", "status": "pending", "signal_date": "2026-11-06",
+        {"id": "ITC-safe_dip-2026-11-06", "symbol": "ITC", "name": "ITC Ltd.",
+         "strategy": "safe_dip", "status": "pending", "signal_date": "2026-11-06",
          "signal_close": 430.0, "max_entry": 438.6, "stop": 410.0, "risk": 20.0},
         {"symbol": "TCS", "name": "TCS", "strategy": "safe_dip", "status": "open", "entry": 3000.0,
          "entry_date": "2026-11-04", "stop": 2900.0, "last_price": 3050.0, "days": 3},
-        {"symbol": "INFY", "name": "Infosys", "strategy": "safe_dip", "status": "selling", "entry": 1500.0,
-         "entry_date": "2026-11-02", "last_price": 1540.0, "sell_reason": "exit_rule"},
+        {"id": "INFY-safe_dip-2026-10-31", "symbol": "INFY", "name": "Infosys",
+         "strategy": "safe_dip", "status": "selling", "entry": 1500.0,
+         "entry_date": "2026-11-02", "last_price": 1540.0, "sell_reason": "exit_rule",
+         "sell_signal_date": "2026-11-06"},
         {"symbol": "OLD", "name": "Old", "strategy": "safe_dip", "status": "exit_rule", "exit_date": "2026-10-01"},
     ]}
     plan = build_plan(tr, "2026-11-06", {"safe_dip": {"win_rate": 66, "trades": 300}})
@@ -179,6 +184,9 @@ def test_plan_and_message():
     assert [h["symbol"] for h in plan["hold"]] == ["TCS"]
     assert [s["symbol"] for s in plan["sell"]] == ["INFY"]
     assert plan["buy"][0]["alert_qty"] == int(config.TRADE_AMOUNT // 438.6)
+    assert plan["buy"][0]["id"] == "ITC-safe_dip-2026-11-06"
+    assert plan["sell"][0]["id"] == "INFY-safe_dip-2026-10-31"
+    assert plan["sell"][0]["exit_signal_date"] == "2026-11-06"
     msg = plan_message(plan, "tomorrow")
     assert "SELL tomorrow" in msg and "INFY" in msg and "BUY tomorrow" in msg and "HOLD" in msg
     assert plan_message({"buy": [], "sell": [], "hold": []}, "today") == ""
@@ -196,6 +204,101 @@ def test_live_day_one_protection():
     tr = {"trades": [dict(t)]}
     ev = tracker.update_live(tr, {"ITC": {"price": 431, "open": 431, "day_low": 429, "day_high": 433, "date": "2026-11-06"}})
     assert ev == []                                               # signal day itself: nothing yet
+
+
+def test_intraday_quote_metrics_and_freshness():
+    previous = pd.DatetimeIndex(["2026-11-09 15:30"], tz="Asia/Kolkata")
+    current = pd.date_range("2026-11-10 09:15", periods=21, freq="min", tz="Asia/Kolkata")
+    ix = previous.append(current)
+    close = np.r_[99.0, np.arange(100.0, 121.0)]
+    hist = pd.DataFrame({
+        "Open": close,
+        "High": close + 1,
+        "Low": close - 1,
+        "Close": close,
+        "Volume": np.r_[50, np.repeat(100, 21)],
+    }, index=ix)
+    q = data.intraday_quote(hist, now=pd.Timestamp("2026-11-10 09:36", tz="Asia/Kolkata").to_pydatetime())
+    assert q["price"] == 120
+    assert q["open"] == 100
+    assert q["prev_close"] == 99
+    assert q["day_high"] == 121 and q["day_low"] == 99
+    assert q["change_pct"] == pytest.approx(21.21, abs=0.01)
+    assert q["vwap"] == pytest.approx(110, abs=0.01)
+    assert q["return_5m"] == pytest.approx(4.35, abs=0.01)
+    assert q["return_15m"] == pytest.approx(14.29, abs=0.01)
+    assert q["range_position"] == pytest.approx(95.5, abs=0.1)
+    assert q["delay_seconds"] == 60
+    assert q["is_fresh"] and not q["stale"]
+
+
+def test_daily_fallback_never_claims_a_future_close_time():
+    ix = pd.DatetimeIndex(["2026-11-09", "2026-11-10"], tz="Asia/Kolkata")
+    hist = pd.DataFrame({"Open": [99, 100], "High": [101, 103], "Low": [98, 99],
+                         "Close": [100, 102], "Volume": [1000, 500]}, index=ix)
+    now = pd.Timestamp("2026-11-10 10:00", tz="Asia/Kolkata").to_pydatetime()
+    q = data.daily_quote(hist, now=now)
+    assert pd.Timestamp(q["asof"]).tz_convert("Asia/Kolkata") == pd.Timestamp(now)
+    assert q["delay_seconds"] == 0
+    assert q["stale"] is True and q["is_fresh"] is False
+
+
+def test_live_snapshot_preserves_missing_quotes_as_stale():
+    old = {"updated": "2026-11-10T04:00:00+00:00", "feed_status": "near_live",
+           "quotes": {"TCS": {"price": 3000, "asof": "2026-11-10T03:59:00+00:00",
+                               "is_fresh": True, "stale": False}}}
+    current = {"ITC": {"price": 430, "asof": "2026-11-10T04:04:00+00:00",
+                        "is_fresh": True, "stale": False, "source": "Yahoo Finance intraday"}}
+    snap = live_analysis.build_snapshot(
+        current, ["ITC", "TCS", "NIFTY"], old, True, updated="2026-11-10T04:05:00+00:00")
+    assert snap["requested"] == 3 and snap["received"] == 1 and snap["fresh_quotes"] == 1
+    assert snap["feed_status"] == "partial"
+    assert snap["quotes"]["TCS"]["stale"] is True
+    assert snap["quotes"]["TCS"]["is_fresh"] is False
+    assert snap["last_good_update"] == "2026-11-10T04:05:00+00:00"
+
+
+def test_live_snapshot_keeps_newer_prior_quote_over_daily_fallback():
+    old = {"updated": "2026-11-10T04:00:00+00:00", "feed_status": "near_live",
+           "quotes": {"TCS": {"price": 3000, "asof": "2026-11-10T03:59:00+00:00",
+                               "is_fresh": True, "stale": False, "source": "Yahoo Finance intraday"}}}
+    fallback = {"TCS": {"price": 2980, "asof": "2026-11-09T10:00:00+00:00",
+                         "is_fresh": False, "stale": True, "source": "Yahoo Finance daily fallback"}}
+    snap = live_analysis.build_snapshot(
+        fallback, ["TCS"], old, True, updated="2026-11-10T04:05:00+00:00")
+    assert snap["quotes"]["TCS"]["price"] == 3000
+    assert snap["quotes"]["TCS"]["source"] == "Yahoo Finance intraday"
+    assert snap["quotes"]["TCS"]["stale"] is True
+    assert snap["feed_status"] == "delayed"
+
+
+def test_stale_live_quote_cannot_trigger_alert():
+    t = {"symbol": "ITC", "strategy": "safe_dip", "status": "pending", "signal_date": "2026-11-06",
+         "signal_close": 430.0, "max_entry": 438.6, "stop": 410.0, "initial_stop": 410.0}
+    stale = {"price": 405, "open": 432, "day_low": 400, "day_high": 433, "date": "2026-11-09",
+             "is_fresh": False, "stale": True}
+    tr = {"trades": [dict(t)]}
+    assert tracker.update_live(tr, {"ITC": stale}) == []
+    assert "live_flags" not in tr["trades"][0]
+
+
+def test_exchange_session_and_poll_buffer(monkeypatch):
+    from engine import run
+
+    monkeypatch.setattr(data, "now_ist", lambda: datetime(2026, 11, 9, 9, 12))
+    assert not run.market_is_open()
+    assert run.market_poll_window()
+
+    monkeypatch.setattr(data, "now_ist", lambda: datetime(2026, 11, 9, 9, 15))
+    assert run.market_is_open()
+
+    monkeypatch.setattr(data, "now_ist", lambda: datetime(2026, 11, 9, 15, 30))
+    assert not run.market_is_open()
+    assert run.market_poll_window()
+
+    monkeypatch.setattr(data, "now_ist", lambda: datetime(2026, 11, 9, 15, 41))
+    assert not run.market_is_open()
+    assert not run.market_poll_window()
 
 
 def test_safe_dip_only_blue_chips():
@@ -235,3 +338,36 @@ def test_all_checks_must_be_positive():
     assert not all_checks(good, 0)["market"]
     bank = {**good, "industry": "Financial Services", "fundamentals": {**good["fundamentals"], "debt_to_equity": 600}}
     assert all_checks(bank, 2)["business"]                                               # banks: no debt test
+
+
+# ----------------------------------------------------------------- expected outcomes
+def test_hold_path_safety_price_rises_and_locks_gains():
+    from engine.backtest import _hold_path
+    closes = np.array([100, 100, 110, 120, 130, 126, 100, 100.0])
+    opens, lows = closes.copy(), closes.copy()
+    lows[5] = 110.0                                    # falls through 12% under the 130 peak (= 114.4)
+    r, early = _hold_path(opens, lows, closes, np.full(8, 2), 1, 7, 0.12, 100.0)
+    assert early and r == pytest.approx(114.4 / 100 - 1 - config.ROUND_TRIP_COST, abs=1e-6)
+    assert r > 0                                       # a gain was locked in, not given back
+
+
+def test_hold_path_sells_when_market_turns_down():
+    from engine.backtest import _hold_path
+    closes = np.array([100, 101, 102, 103, 104, 105.0])
+    reg = np.array([2, 2, 2, 0, 2, 2])
+    r, early = _hold_path(closes.copy(), closes.copy(), closes, reg, 1, 5, 0.12, 100.0)
+    assert early and r == pytest.approx(104 / 100 - 1 - config.ROUND_TRIP_COST, abs=1e-6)   # sold at the next open
+
+
+def test_holding_outcomes_and_trade_percentiles_are_ordered():
+    f = Features(random_walk_prices(seed=14, days=1100))
+    inds = {s: ("A" if i % 4 == 0 else "B" if i % 4 == 1 else "C" if i % 4 == 2 else "D") for i, s in enumerate(SYMS)}
+    out = backtest.holding_outcomes(f, inds, set(SYMS))
+    for part in ("stock", "fund"):
+        for k, r in out[part].items():
+            if r.get("n"):
+                assert r["p10"] <= r["p25"] <= r["median"] <= r["p75"] <= r["p90"]
+                assert 0 <= r["pct_positive"] <= 100
+    res = backtest.backtest_swing(f, SWING_STRATEGIES[1])
+    assert res["p10_return"] <= res["median_return"] <= res["p90_return"]
+    assert res["p25_return"] <= res["p75_return"] and res["days_median"] <= res["days_p90"]

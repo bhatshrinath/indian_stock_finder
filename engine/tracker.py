@@ -154,6 +154,10 @@ def update_live(tr: dict, quotes: dict[str, dict]) -> list[dict]:
         if t["symbol"] not in quotes:
             continue
         q = quotes[t["symbol"]]
+        # Daily fallbacks and retained last-good quotes are useful for display,
+        # but are never safe evidence that a stop or target traded today.
+        if q.get("stale") or q.get("is_fresh") is False:
+            continue
         if t["status"] == "pending" and q.get("open") and q["date"] > t["signal_date"]:
             # buy day: the trade starts at today's open, so protect it from the first minute
             flags = t.setdefault("live_flags", {})

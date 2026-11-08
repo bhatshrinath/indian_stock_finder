@@ -7,7 +7,7 @@
 const DATA = "data/";
 const LS = { settings: "sf.settings", my: "sf.my", seen: "sf.seenIdeas", alerted: "sf.alerted", tab: "sf.tab" };
 const DEFAULTS = { tradeMoney: 10000, protect: false, capital: 500000, ltPct: 70, swingPct: 30, riskPct: 1, maxPosPct: 20, notify: false };
-const S = { latest: null, live: null, news: null, bt: null, track: null, swingFilter: "buy" };
+const S = { latest: null, live: null, news: null, bt: null, track: null, swingFilter: "buy", refreshingLive: false };
 
 // ------------------------------------------------------------------ storage (safe)
 const store = {
@@ -41,10 +41,60 @@ const ago = (iso) => {
   return h < 36 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
 };
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "–");
+const fmtClock = (d) => (d ? new Date(d).toLocaleTimeString("en-IN", {
+  hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata", timeZoneName: "short",
+}) : "–");
+const indiaDateOf = (value) => new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+}).format(new Date(value));
+const indiaDate = () => indiaDateOf(new Date());
 
-function livePrice(sym) {
+function liveQuote(sym) {
   const q = S.live && S.live.quotes && S.live.quotes[sym];
   return q ? q : null;
+}
+
+function livePrice(sym) {
+  const q = liveQuote(sym);
+  return quoteFresh(q) ? q : null;
+}
+
+function quoteChange(q) {
+  if (!q) return null;
+  if (q.change_pct != null) return Number(q.change_pct);
+  return q.prev_close ? (q.price / q.prev_close - 1) * 100 : null;
+}
+
+function quoteFresh(q) {
+  if (!q || q.stale || q.is_fresh === false) return false;
+  if (q.date && q.date !== indiaDate()) return false;
+  const stamp = q.asof || S.live?.updated;
+  if (!stamp) return q.is_fresh === true;
+  const age = Date.now() - new Date(stamp).getTime();
+  return Number.isFinite(age) && age >= -2 * 60 * 1000 && age <= 30 * 60 * 1000;
+}
+
+function feedView() {
+  const f = S.live || {};
+  const count = Object.keys(f.quotes || {}).length;
+  const age = f.updated ? Date.now() - new Date(f.updated).getTime() : Infinity;
+  let key = f.feed_status;
+  if (!key) {
+    if (!S.live) key = "unavailable";
+    else if (f.market_open === false) key = "closed";
+    else if (f.market_open !== true) key = "unavailable";
+    else if (!count) key = "unavailable";
+    else key = age <= 30 * 60 * 1000 ? "near_live" : "delayed";
+  }
+  if (f.market_open && age > 30 * 60 * 1000 && (key === "near_live" || key === "partial")) key = "delayed";
+  const map = {
+    near_live: { cls: "good", label: "Near-live feed", icon: "●" },
+    partial: { cls: "warn", label: "Partial feed", icon: "●" },
+    delayed: { cls: "warn", label: "Prices delayed", icon: "●" },
+    unavailable: { cls: "bad", label: "Feed unavailable", icon: "●" },
+    closed: { cls: "info", label: "Market closed", icon: "○" },
+  };
+  return { key, ...(map[key] || map.delayed), count, coverage: f.coverage_pct, updated: f.updated };
 }
 
 // ------------------------------------------------------------------ charts (inline SVG)
@@ -126,6 +176,19 @@ async function getJSON(name) {
   return r.json();
 }
 
+// remember the highest price seen since buying (the long-term safety price follows it)
+function updateHighs() {
+  const my = myPositions();
+  let changed = false;
+  for (const p of my) {
+    const now = livePrice(p.symbol)?.price ?? latestPrice(p.symbol);
+    const high = p.high ?? p.price;
+    if (now != null && now > high) { p.high = now; changed = true; }
+    else if (p.high == null) { p.high = p.price; changed = true; }
+  }
+  if (changed) store.set(LS.my, my);
+}
+
 async function loadAll() {
   try {
     const [latest, live, news] = await Promise.allSettled([getJSON("latest.json"), getJSON("live.json"), getJSON("market_news.json")]);
@@ -133,12 +196,17 @@ async function loadAll() {
     if (live.status === "fulfilled") S.live = live.value;
     if (news.status === "fulfilled") S.news = news.value;
   } catch (e) { console.warn(e); }
+  updateHighs();
   renderAll();
   checkAlerts();
 }
 
 async function refreshLive() {
-  try { S.live = await getJSON("live.json"); renderAll(); checkAlerts(); } catch { /* offline */ }
+  if (S.refreshingLive) return;
+  S.refreshingLive = true;
+  renderLiveDashboard();
+  try { S.live = await getJSON("live.json"); updateHighs(); renderAll(); checkAlerts(); } catch { /* keep the last good snapshot */ }
+  finally { S.refreshingLive = false; renderLiveDashboard(); }
 }
 
 async function loadResults() {
@@ -152,9 +220,10 @@ function renderStatus() {
   const el = $("#status");
   const L = S.latest;
   if (!L) { el.textContent = "No data yet"; return; }
-  const liveOn = S.live && S.live.market_open;
-  const upd = liveOn ? S.live.updated : L.generated;
-  el.innerHTML = `<span class="dot ${liveOn ? "live" : ""}"></span>${liveOn ? "Market open · prices" : "Market closed · data"} ${esc(ago(upd))}`;
+  const f = feedView();
+  const active = f.key === "near_live" || f.key === "partial";
+  const upd = S.live?.updated || L.generated;
+  el.innerHTML = `<span class="dot ${active ? "live" : ""}"></span>${esc(f.label)} · ${esc(ago(upd))}`;
 }
 
 // ------------------------------------------------------------------ MARKET DETAILS (advanced view, under "More")
@@ -190,6 +259,285 @@ function renderMarket() {
   html += `<div class="card small">This page shows the market only. For what to buy, see <b>Suggestions</b>.
     <div class="btns"><button class="btn primary" data-tab="today">See today's suggestions</button></div></div>`;
   el.innerHTML = html;
+}
+
+// ------------------------------------------------------------------ LIVE INTELLIGENCE
+// This screen adds intraday context to an existing plan. It never upgrades a
+// WATCH idea to BUY: only the daily, backtested engine is allowed to do that.
+function liveAsOf() {
+  const stamps = Object.values(S.live?.quotes || {}).map((q) => q.asof).filter(Boolean)
+    .sort((a, b) => new Date(b) - new Date(a));
+  return stamps[0] || S.live?.updated || null;
+}
+
+function intradayFacts(q) {
+  if (!q) return "";
+  const vwapGap = q.vwap ? (q.price / q.vwap - 1) * 100 : null;
+  return `<div class="live-metrics">
+    <div><span>vs VWAP</span><b class="${tone(vwapGap)}">${pct(vwapGap, 2)}</b></div>
+    <div><span>15-min move</span><b class="${tone(q.return_15m)}">${pct(q.return_15m, 2)}</b></div>
+    <div><span>Session range</span><b>${q.range_position == null ? "–" : num(q.range_position, 0) + "%"}</b></div>
+  </div>`;
+}
+
+function systemStrategyName(key) {
+  return (S.latest?.strategies || []).find((s) => s.key === key)?.name || null;
+}
+
+function sameSwingStrategy(position, item) {
+  if (position.kind !== "swing" || !item) return false;
+  if (position.strategy && item.strategy) return position.strategy === item.strategy;
+  const itemName = item.strategy_name || systemStrategyName(item.strategy);
+  return !!(position.strategy_name && itemName && position.strategy_name === itemName);
+}
+
+function matchingSystemItem(position, items, peers = myPositions()) {
+  if (position.kind !== "swing") return null;
+  const candidates = items.filter((x) => x.symbol === position.symbol);
+  if (position.planId) {
+    const exactId = candidates.find((x) => x.id === position.planId);
+    if (exactId) return exactId;
+  }
+  const exact = candidates.filter((x) => sameSwingStrategy(position, x));
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) {
+    let boughtDay = null;
+    try { if (position.date) boughtDay = indiaDateOf(position.date); } catch { /* invalid legacy date */ }
+    const newPending = exact.find((x) => x.status === "pending" && boughtDay
+      && x.signal_date && boughtDay > x.signal_date);
+    return newPending || exact.find((x) => x.status === "selling")
+      || exact.find((x) => x.status === "open") || exact[0];
+  }
+  const positionIdentified = !!(position.planId || position.strategy || position.strategy_name);
+  const candidateIdentified = candidates.some((x) => x.strategy || x.strategy_name);
+  // Never attach an identified system strategy to an unidentified legacy lot,
+  // or one explicitly saved under a different strategy.
+  if (candidateIdentified || positionIdentified) return null;
+  const peerCount = peers.filter((p) => p.kind === "swing" && p.symbol === position.symbol).length;
+  return candidates.length === 1 && peerCount === 1 ? candidates[0] : null;
+}
+
+function positionSystemContext(position, peers = myPositions()) {
+  const plan = matchingSystemItem(position, S.latest?.open_trades || [], peers);
+  const rawExit = matchingSystemItem(position, S.latest?.sell_today || [], peers);
+  const exitDay = rawExit?.exit_signal_date || S.latest?.data_date;
+  let boughtDay = null;
+  try { if (position.date) boughtDay = indiaDateOf(position.date); } catch { /* invalid legacy date */ }
+  const replacementLot = !!(rawExit && plan?.status === "pending"
+    && ((position.planId && position.planId === plan.id)
+      || (boughtDay && exitDay && boughtDay > exitDay)));
+  return { plan, exit: replacementLot ? null : rawExit };
+}
+
+function tighterStop(localStop, systemStop) {
+  const stops = [localStop, systemStop].map(Number).filter((x) => Number.isFinite(x) && x > 0);
+  return stops.length ? Math.max(...stops) : null;
+}
+
+function liveMonitorItems() {
+  const plans = S.latest?.open_trades || [];
+  const exits = S.latest?.sell_today || [];
+  const mine = myPositions();
+  const usedPlans = new Set();
+  const usedExits = new Set();
+  const out = mine.map((p) => {
+    const { plan: candidatePlan, exit } = positionSystemContext(p, mine);
+    // A newly pending plan can coexist with yesterday's completed exit. Keep it as its own card.
+    const t = exit && candidatePlan?.status !== "selling" ? null : candidatePlan;
+    if (t) usedPlans.add(t);
+    if (exit) usedExits.add(exit);
+    const authoritativeExit = !!exit || t?.status === "selling";
+    const systemStop = t?.status === "open" ? t.stop : null;
+    return {
+      key: p.id, symbol: p.symbol, name: p.name || t?.name || p.symbol,
+      source: t || exit ? "My Stocks · System plan" : "My Stocks",
+      status: authoritativeExit ? "selling" : t?.status || "open", authoritativeExit,
+      entry: p.price, stop: tighterStop(p.stop, systemStop ?? t?.stop),
+      target: t?.target ?? p.target, qty: p.qty, local: p,
+      maxEntry: t?.max_entry, signalClose: t?.signal_close, initialStop: t?.initial_stop ?? t?.stop,
+      signalDate: t?.signal_date, strategy: t?.strategy || exit?.strategy || p.strategy,
+      sellReason: exit?.reason || t?.sell_reason,
+    };
+  });
+  for (const t of plans) if (!usedPlans.has(t)) out.push({
+    key: t.id, symbol: t.symbol, name: t.name || t.symbol, source: "System plan", status: t.status,
+    entry: t.entry || t.signal_close, stop: t.stop, target: t.target, maxEntry: t.max_entry,
+    signalClose: t.signal_close, initialStop: t.initial_stop ?? t.stop, signalDate: t.signal_date,
+    strategy: t.strategy, authoritativeExit: t.status === "selling", sellReason: t.sell_reason,
+  });
+  for (const exit of exits) {
+    if (usedExits.has(exit)) continue;
+    const matchingSelling = plans.filter((t) => t.symbol === exit.symbol && t.status === "selling");
+    const duplicate = matchingSelling.some((t) => exit.strategy && t.strategy === exit.strategy)
+      || (!exit.strategy && matchingSelling.length === 1
+        && exits.filter((x) => x.symbol === exit.symbol).length === 1);
+    if (duplicate) continue;
+    out.push({
+      key: `exit-${exit.id || exit.symbol}-${exit.strategy || exit.reason || "plan"}`,
+      symbol: exit.symbol, name: exit.name || exit.symbol, source: "System exit",
+      status: "selling", authoritativeExit: true, entry: exit.entry, lastPrice: exit.price,
+      strategy: exit.strategy, sellReason: exit.reason,
+    });
+  }
+  return out;
+}
+
+function liveMonitorCard(x) {
+  const q = liveQuote(x.symbol);
+  const now = q?.price ?? x.lastPrice ?? x.entry;
+  const chg = quoteChange(q);
+  const fresh = quoteFresh(q);
+  let displayStop = x.stop;
+  let displayTarget = x.target;
+  let state = { cls: "ok", label: x.status === "pending" ? "WAIT FOR PLAN" : "HOLD" };
+  if (x.status === "selling") {
+    const session = sessionInfo(S.latest?.data_date || "");
+    const label = session.actedToday
+      ? (session.phase === "during" ? "SELL NOW" : "SELL IF NOT DONE")
+      : "SELL AT OPEN";
+    state = { cls: "bad", label }; // authoritative daily instruction beats feed health
+  } else if (x.status === "pending") {
+    if ((q && !fresh) || (S.live?.market_open && !q)) state = { cls: "warn", label: "QUOTE DELAYED" };
+    else if (q && q.open != null && (!x.signalDate || !q.date || q.date > x.signalDate)) {
+      const invalidOpen = ((x.maxEntry != null && q.open > x.maxEntry)
+        || (x.initialStop != null && q.open <= x.initialStop));
+      if (invalidOpen) state = { cls: "warn", label: "SKIP TODAY" };
+      else {
+        const originalRisk = x.signalClose != null && x.initialStop != null ? x.signalClose - x.initialStop : null;
+        if (originalRisk != null && originalRisk > 0) {
+          displayStop = Math.round((q.open - originalRisk) * 100) / 100;
+          if (x.target != null && x.signalClose != null)
+            displayTarget = Math.round((q.open + x.target - x.signalClose) * 100) / 100;
+        }
+        if (displayStop != null && q.day_low != null && q.day_low <= displayStop)
+          state = { cls: "bad", label: "STOP TOUCHED" };
+        else state = { cls: "info", label: "WITHIN PLANNED LIMIT" };
+      }
+    }
+  } else if ((q && !fresh) || (S.live?.market_open && !q)) {
+    state = { cls: "warn", label: "QUOTE DELAYED" };
+  } else if (q && displayStop && ((q.day_low != null && q.day_low <= displayStop) || q.price <= displayStop)) {
+    state = { cls: "bad", label: "SELL / CHECK ORDER" };
+  } else if (q && displayTarget && (q.day_high >= displayTarget || q.price >= displayTarget)) {
+    state = { cls: "good", label: "TARGET TOUCHED" };
+  }
+  const stopGap = displayStop && now ? (now / displayStop - 1) * 100 : null;
+  const targetGap = displayTarget && now ? (displayTarget / now - 1) * 100 : null;
+  const pl = x.entry && now ? (now / x.entry - 1) * 100 : null;
+  const plLabel = x.status === "pending" && !x.local ? "Vs signal close" : "Since entry";
+  return `<article class="card live-quote ${state.cls}">
+    <div class="row"><div><h3>${esc(x.name)}</h3><div class="muted small">${esc(x.symbol)} · ${esc(x.source)}</div></div>
+      <span class="badge b-${state.cls === "bad" ? "red" : state.cls === "warn" ? "medium" : state.cls === "good" ? "high" : "watch"}">${esc(state.label)}</span></div>
+    <div class="quote-price">${px(now)} <span class="${tone(chg)}">${pct(chg, 2)}</span></div>
+    <div class="kv live-kv">
+      <div><span>${plLabel}</span><b class="${tone(pl)}">${pct(pl, 2)}</b></div>
+      <div><span>Safety buffer</span><b class="${stopGap != null && stopGap < 2 ? "down" : ""}">${stopGap == null ? "–" : pct(stopGap, 1, false)}</b></div>
+      <div><span>Safety price</span><b>${px(displayStop)}</b></div>
+      <div><span>To target</span><b>${targetGap == null ? "–" : pct(targetGap, 1, false)}</b></div>
+    </div>${intradayFacts(q)}
+    <div class="quote-asof">${x.sellReason ? `Exit reason: ${esc(x.sellReason)} · ` : ""}${q?.asof ? `Quote ${esc(fmtClock(q.asof))}` : "No intraday quote"}${q && !quoteFresh(q) ? " · delayed" : ""}</div>
+  </article>`;
+}
+
+function factorChip(label, ok, detail = "") {
+  const cls = ok === true ? "pass" : ok === false ? "fail" : "neutral";
+  return `<span class="factor ${cls}">${ok === true ? "✓" : ok === false ? "!" : "·"} ${esc(label)}${detail ? ` ${esc(detail)}` : ""}</span>`;
+}
+
+function radarCard(pk) {
+  const q = liveQuote(pk.symbol);
+  const now = q?.price ?? pk.price;
+  const fresh = quoteFresh(q);
+  let state = { cls: "b-low", label: "WATCH ONLY" };
+  if (pk.action === "BUY") {
+    if ((q && !fresh) || (S.live?.market_open && !q)) state = { cls: "b-medium", label: "CHECK DELAYED QUOTE" };
+    else if (q && q.open != null && q.date > (pk.signal_date || S.latest?.data_date || "")) {
+      if (q.open > pk.max_entry || q.open <= pk.stop) state = { cls: "b-medium", label: "SKIP TODAY" };
+      else {
+        const dayStop = Math.round((q.open - (pk.risk_per_share ?? (pk.price - pk.stop))) * 100) / 100;
+        const sessionLow = q.day_low ?? q.price;
+        state = sessionLow <= dayStop
+          ? { cls: "b-red", label: "STOP TOUCHED" }
+          : { cls: "b-high", label: "OPEN WAS VALID" };
+      }
+    } else if (S.live?.market_open && q && (q.open == null || !q.date)) state = { cls: "b-medium", label: "CHECK QUOTE" };
+    else state = { cls: "b-high", label: "DAILY PLAN VALID" };
+  }
+  const newsOk = !(pk.red_flags || []).length && (pk.news_sentiment ?? 0) > -0.3;
+  const edgeOk = pk.strategy_enabled !== false && (pk.hist_avg_return ?? 0) > 0;
+  const trendOk = pk.price == null || pk.sma200 == null ? null : pk.price > pk.sma200;
+  const rsOk = pk.rs_percentile == null ? null : pk.rs_percentile >= 70;
+  const volumeOk = pk.vol_ratio == null ? null : pk.vol_ratio >= 1.5;
+  return `<article class="card radar-card">
+    <div class="row"><div><h3>${esc(pk.name)}</h3><div class="muted small">${esc(pk.symbol)} · ${esc(pk.strategy_name)}</div></div>
+      <span class="badge ${state.cls}">${esc(state.label)}</span></div>
+    <div class="quote-price">${px(now)} <span class="${tone(quoteChange(q))}">${pct(quoteChange(q), 2)}</span></div>
+    ${intradayFacts(q)}
+    <div class="factors">
+      ${factorChip("Backtested edge", edgeOk)}
+      ${factorChip("Long trend", trendOk)}
+      ${factorChip("Relative strength", rsOk, pk.rs_percentile == null ? "" : num(pk.rs_percentile, 0) + "%")}
+      ${factorChip("Volume", volumeOk, pk.vol_ratio == null ? "" : num(pk.vol_ratio, 1) + "×")}
+      ${factorChip("News", newsOk)}
+    </div>
+    <div class="quote-asof">Score ${num(pk.score, 0)}/100 · ${num(pk.hist_trades, 0)} historical trades · ${pct(pk.hist_win_rate, 0, false)} winners</div>
+  </article>`;
+}
+
+function strategyHealthCard(s) {
+  const all = s.stats || {};
+  const recent = s.last_12m || {};
+  const enough = (recent.trades || 0) >= 30;
+  const healthy = enough && (recent.avg_return || 0) > 0 && (recent.profit_factor || 0) >= 1.1;
+  const label = !enough ? "BUILDING EVIDENCE" : healthy ? "HEALTHY RECENTLY" : "WEAK RECENTLY";
+  return `<article class="card strategy-health ${healthy ? "good" : enough ? "warn" : "info"}">
+    <div class="row"><h3>${esc(s.name)}</h3><span class="badge ${healthy ? "b-high" : enough ? "b-medium" : "b-watch"}">${label}</span></div>
+    <div class="kv live-kv"><div><span>5-year trades</span><b>${num(all.trades, 0)}</b></div>
+      <div><span>5-year profit factor</span><b>${all.profit_factor ?? "–"}</b></div>
+      <div><span>Recent win rate</span><b>${pct(recent.win_rate, 0, false)}</b></div>
+      <div><span>Recent avg trade</span><b class="${tone(recent.avg_return)}">${pct(recent.avg_return, 2)}</b></div></div>
+  </article>`;
+}
+
+function renderLiveDashboard() {
+  const el = $("#tab-live");
+  if (!el) return;
+  const L = S.latest;
+  if (!L) { el.innerHTML = setupHelp(); return; }
+  const f = feedView();
+  const live = S.live || {};
+  const requested = live.requested ?? f.count;
+  const received = live.received ?? f.count;
+  const monitor = liveMonitorItems();
+  const nq = liveQuote("NIFTY");
+  const nprice = nq?.price ?? L.market?.nifty;
+  const nchg = quoteChange(nq) ?? L.market?.nifty_change_pct;
+  const radar = (L.swing || []).slice().sort((a, b) =>
+    Number(b.action === "BUY") - Number(a.action === "BUY") || (b.score || 0) - (a.score || 0)).slice(0, 10);
+  const health = (L.strategies || []).map(strategyHealthCard).join("");
+  const quoteSummary = !S.live ? "Live feed has not loaded"
+    : requested ? `${received}/${requested} requested quotes${f.coverage != null ? ` · ${num(f.coverage, 0)}% coverage` : ""}`
+      : f.key === "closed" ? "Live quotes resume during market hours" : "No live quotes received";
+  el.innerHTML = `<h2>Live Intelligence</h2>
+    <div class="card feed-card ${f.cls}">
+      <div class="row"><div><div class="feed-title"><span class="feed-led">${f.icon}</span> ${esc(f.label)}</div>
+        <div class="muted small">As of ${esc(fmtClock(liveAsOf()))} · ${quoteSummary}</div></div>
+        <button class="btn small" data-refresh-live ${S.refreshingLive ? "disabled" : ""}>${S.refreshingLive ? "Refreshing…" : "Refresh"}</button></div>
+      <p class="small">${esc(live.data_delay_note || "Free market data is near-live and may be delayed. Confirm every order and price in your broker app.")}</p>
+    </div>
+    <div class="card regime r${L.market?.regime ?? 1}"><div class="row"><div><div class="muted small">Nifty 50</div>
+      <div class="big">${num(nprice, 0)} <span class="${tone(nchg)} live-change">${pct(nchg, 2)}</span></div></div>
+      <span class="badge ${(L.market?.regime ?? 1) === 2 ? "b-high" : (L.market?.regime ?? 1) === 1 ? "b-medium" : "b-red"}">${esc(L.market?.regime_label || "Unknown")}</span></div>
+      ${intradayFacts(nq)}
+      <div class="kv live-kv"><div><span>Above 200-day average</span><b>${pct(L.market?.breadth_above_200dma, 0, false)}</b></div>
+        <div><span>Advances / declines</span><b>${L.market?.advances ?? "–"} / ${L.market?.declines ?? "–"}</b></div></div></div>
+    <div class="callout info small"><b>How to use this:</b> live data monitors an existing plan, entry limit, stop and target. It does not turn a watch-only stock into a buy. "No trade" is a valid outcome.</div>
+    <h2>Live risk monitor</h2>
+    ${monitor.length ? `<div class="grid live-grid">${monitor.map(liveMonitorCard).join("")}</div>` : `<div class="card empty">No open or recorded positions yet. Add a purchase from Suggestions or My Stocks to monitor it here.</div>`}
+    <h2>Signal radar</h2><p class="muted small">Daily backtested ideas with intraday confirmation. Only green plan cards were selected as BUY by the daily engine. A valid opening does not mean you should chase a late entry.</p>
+    <div class="grid live-grid">${radar.length ? radar.map(radarCard).join("") : `<div class="card empty">No current swing setups.</div>`}</div>
+    <h2>Strategy health</h2><p class="muted small">Recent results are shown separately from the full backtest as a health check. This label does not override the engine's validated BUY/WATCH decision above.</p>
+    <div class="grid live-grid">${health || `<div class="card empty">Strategy results are not available yet.</div>`}</div>`;
 }
 
 function trackMini() {
@@ -295,8 +643,13 @@ function openBuyDialog(pk) {
   $("#bsave").onclick = (e) => {
     e.preventDefault();
     const my = myPositions();
+    const matchingPlans = (S.latest?.open_trades || []).filter((t) =>
+      t.symbol === pk.symbol && (!pk.strategy || t.strategy === pk.strategy));
+    const plan = matchingPlans.find((t) => t.status === "pending")
+      || matchingPlans.find((t) => t.status === "open") || matchingPlans[0];
     my.push({
-      id: pk.symbol + "-" + Date.now(), symbol: pk.symbol, kind: pk.kind, strategy_name: pk.strategy_name,
+      id: pk.symbol + "-" + Date.now(), symbol: pk.symbol, kind: pk.kind,
+      strategy: pk.strategy, strategy_name: pk.strategy_name, planId: plan?.id,
       qty: +$("#bq").value, price: +$("#bp").value, stop: +$("#bs").value || null, target: +$("#bt").value || null,
       date: new Date().toISOString(), lastPrice: pk.price,
     });
@@ -662,18 +1015,46 @@ function greeting() {
 // What should the user do with a stock they hold?
 function positionStatus(p) {
   const L = S.latest || {};
-  const now = latestPrice(p.symbol) ?? p.lastPrice ?? p.price;
-  const sell = (L.sell_today || []).find((x) => x.symbol === p.symbol);
+  const q = livePrice(p.symbol);
+  const now = q?.price ?? latestPrice(p.symbol) ?? p.lastPrice ?? p.price;
+  const sessionLow = q?.day_low ?? now;
+  const sessionHigh = q?.day_high ?? now;
+  const { plan: systemTrade, exit: sell } = positionSystemContext(p, myPositions());
+  let effectiveStop = systemTrade?.status === "open" ? tighterStop(p.stop, systemTrade.stop) : p.stop;
+  let effectiveTarget = systemTrade?.status === "open" && systemTrade.target != null
+    ? systemTrade.target : p.target;
+  if (systemTrade?.status === "pending" && q?.open != null && q.date > systemTrade.signal_date) {
+    const validOpen = q.open <= systemTrade.max_entry && q.open > systemTrade.initial_stop;
+    const originalRisk = systemTrade.signal_close - systemTrade.initial_stop;
+    if (validOpen && Number.isFinite(originalRisk) && originalRisk > 0) {
+      effectiveStop = Math.round((q.open - originalRisk) * 100) / 100;
+      if (systemTrade.target != null)
+        effectiveTarget = Math.round((q.open + systemTrade.target - systemTrade.signal_close) * 100) / 100;
+    }
+  }
+  if (p.kind === "long_term") {
+    // the safety price rises with the price: always 12% (10% for funds) below the highest price since buying
+    const trailStop = Math.round((p.high ?? p.price) * (1 - trailPct(p)) * 100) / 100;
+    effectiveStop = Math.max(effectiveStop ?? 0, trailStop);
+  }
   const removed = p.kind === "long_term" && (L.long_term?.changes?.removed || []).includes(p.symbol);
   const plAmt = now != null ? (now - p.price) * p.qty : null;
   const plPct = now != null ? (now / p.price - 1) * 100 : null;
   let st;
-  if (p.stop && now != null && now <= p.stop)
-    st = { cls: "bad", icon: "🔴", head: "SELL NOW", text: `The price fell to your safety price (${px(p.stop)}). Selling now protects your money. Small losses are part of the plan.` };
-  else if (p.target && now != null && now >= p.target)
-    st = { cls: "good", icon: "🎉", head: "BOOK PROFIT", text: `It reached the goal price (${px(p.target)}). Sell now to lock in your profit.` };
-  else if (sell && p.kind !== "long_term")
-    st = { cls: "good", icon: "💰", head: "SELL at 9:15 AM", text: "The plan says this trade is finished. Sell when the market opens." };
+  if (effectiveStop && sessionLow != null && sessionLow <= effectiveStop)
+    st = { cls: "bad", icon: "🔴", head: "SELL NOW", text: `The price fell to your safety price (${px(effectiveStop)}). Selling now protects your money. Small losses are part of the plan.` };
+  else if (effectiveTarget && sessionHigh != null && sessionHigh >= effectiveTarget)
+    st = { cls: "good", icon: "🎉", head: "BOOK PROFIT", text: `It reached the goal price (${px(effectiveTarget)}). Sell now to lock in your profit.` };
+  else if (sell) {
+    const session = sessionInfo(L.data_date || "");
+    const head = session.actedToday
+      ? (session.phase === "during" ? "SELL NOW" : "SELL IF NOT DONE")
+      : "SELL at 9:15 AM";
+    const text = session.actedToday
+      ? "The plan says this trade is finished. Sell it now if you have not already done so."
+      : "The plan says this trade is finished. Sell when the market opens.";
+    st = { cls: "good", icon: "💰", head, text };
+  }
   else if (p.kind === "long_term" && (L.market?.regime ?? 1) === 0 && !p.symbol.endsWith("GOLDBEES"))
     st = { cls: "warn", icon: "🛡", head: "SELL (market falling)", text: "The whole market has turned down. Sell and keep the money safe. The app will suggest when to buy again." };
   else if (p.kind === "long_term" && p.symbol !== "NIFTYBEES" && p.symbol !== "GOLDBEES"
@@ -684,13 +1065,13 @@ function positionStatus(p) {
     st = { cls: "warn", icon: "🔁", head: "SELL (monthly change)", text: "This stock has left the long-term list. Sell it and use the money for the new stocks in Invest." };
   else if (p.kind === "swing" && p.sellBy && new Date().toISOString().slice(0, 10) > p.sellBy)
     st = { cls: "warn", icon: "⏱", head: "SELL", text: "The short-term trade's time is up. Sell at the market opening." };
-  else if (p.stop && now != null && (now - p.stop) / now < 0.02)
-    st = { cls: "warn", icon: "🟡", head: "HOLD, but watch", text: `The price is close to your safety price (${px(p.stop)}).` };
+  else if (effectiveStop && now != null && (now - effectiveStop) / now < 0.02)
+    st = { cls: "warn", icon: "🟡", head: "HOLD, but watch", text: `The price is close to your safety price (${px(effectiveStop)}).` };
   else
     st = { cls: "ok", icon: "🟢", head: "HOLD", text: p.kind === "long_term"
-      ? `Hold for months. Sell if it falls below ${px(p.stop)}. The app checks it every month.`
+      ? `Hold. Sell if it falls to ${px(effectiveStop)} (this rises as the price rises). The app checks it every month.`
       : `Nothing to do. The app will tell you when to sell${p.sellBy ? ` (at the latest around ${fmtDate(p.sellBy)})` : ""}.` };
-  return { ...st, now, plAmt, plPct, action: st.head !== "HOLD" && st.head !== "HOLD, but watch" };
+  return { ...st, now, plAmt, plPct, stop: effectiveStop, action: st.head !== "HOLD" && st.head !== "HOLD, but watch" };
 }
 
 function welcomeCard() {
@@ -775,6 +1156,16 @@ function renderHome() {
   if (ws) ws.onclick = () => saveCapital(+$("#w-cap").value);
 }
 
+function holdPlanLine(p) {
+  if (p.kind === "long_term") {
+    const H = S.latest?.expect?.holding || {};
+    const r = (isFundSym(p.symbol) ? H.fund : H.stock)?.["6m"];
+    return `<div class="small muted">📅 Plan: hold about 6 to 12 months (${esc(fmtDate(addDays(p.date, 182)))} to ${esc(fmtDate(addDays(p.date, 365)))}), checked monthly.</div>
+      ${r && r.n >= 8 ? `<div class="small muted">🎯 Typical after 6 months: about ${px(p.price * (1 + r.median / 100))} (${pct(r.median, 0)}); good case ${px(p.price * (1 + r.p75 / 100))}.</div>` : ""}`;
+  }
+  return p.sellBy ? `<div class="small muted">📅 Time limit: sell by about ${esc(fmtDate(p.sellBy))} at the latest.</div>` : "";
+}
+
 function renderMyStocks() {
   const el = $("#tab-mystocks");
   const mine = myPositions().map((p) => ({ p, s: positionStatus(p) }));
@@ -797,7 +1188,8 @@ function renderMyStocks() {
       <div class="pl"><span>Now ${s.now != null ? px(s.now) : "–"}</span>
         <b class="${tone(s.plAmt)}">${s.plAmt == null ? "–" : (s.plAmt >= 0 ? "+" : "−") + inr(Math.abs(s.plAmt))} (${pct(s.plPct)})</b></div>
       <p>${s.text}</p>
-      ${p.stop ? `<div class="small muted">🛡 Safety price ${px(p.stop)}${p.target ? ` · 🎯 Goal ${px(p.target)}` : ""}</div>` : ""}
+      ${s.stop ? `<div class="small muted">🛡 Safety price now ${px(s.stop)}${p.kind === "long_term" ? " (rises as the price rises)" : ""}${p.target ? ` · 🎯 Goal ${px(p.target)}` : ""}</div>` : ""}
+      ${holdPlanLine(p)}
       <div class="btns"><button class="btn" data-sold="${esc(p.id)}">I sold it</button></div>
     </article>`).join("")}
     <p class="small muted center">Prices refresh every 15 minutes while the market is open.</p>`;
@@ -850,6 +1242,7 @@ function renderMore() {
 
 function renderAdvanced() {
   const items = [
+    ["live", "📡", "Live Intelligence", "Near-live quotes, risk and signal confirmation"],
     ["plan", "📋", "Daily plan", "Buy / sell / hold list followed by the app"],
     ["market", "🌐", "Market details", "Nifty chart and market health"],
     ["marketnews", "📰", "Market news", "General headlines"],
@@ -1034,13 +1427,13 @@ function liveDangers() {
   const out = [];
   for (const h of plan.hold) {
     const q = livePrice(h.symbol);
-    if (q && h.stop && q.price <= h.stop) out.push({ x: h, q, stop: h.stop });
+    if (q && h.stop && (q.day_low ?? q.price) <= h.stop) out.push({ x: h, q, stop: h.stop });
   }
   for (const b of plan.buy) {
     const q = livePrice(b.symbol);
     if (q && q.open && q.date > b.signal_date && q.open <= b.max_entry && q.open > b.stop) {
-      const dayStop = q.open - b.risk_per_share;
-      if (q.price <= dayStop) out.push({ x: b, q, stop: dayStop });
+      const dayStop = Math.round((q.open - b.risk_per_share) * 100) / 100;
+      if ((q.day_low ?? q.price) <= dayStop) out.push({ x: b, q, stop: dayStop });
     }
   }
   return out;
@@ -1165,7 +1558,10 @@ function basket() {
       : `Big company · ${x.industry}`;
     const checks = isFund ? "✓ Price rising" : "✓ Strong business · ✓ Price rising · ✓ News fine · ✓ Market OK";
     return {
-      kind: x._swing ? "swing" : "long_term", amount: per, symbol: x.symbol, name: x.name, price: x.price,
+      kind: x._swing ? "swing" : "long_term", amount: per, symbol: x.symbol, name: x.name,
+      strategy: x.strategy, strategy_name: (L.swing || []).find((y) =>
+        y.symbol === x.symbol && y.strategy === x.strategy)?.strategy_name,
+      planId: x.id, signal_date: x.signal_date, price: x.price,
       max_entry: x.max_entry || +(x.price * 1.02).toFixed(2), stop: x._swing ? x.stop : x.review_below,
       horizon: tag, type, checks: x._swing ? "✓ Strong past record · ✓ Market rising" : checks,
       sellRule: x._swing ? "The app will tell you when to sell (usually within a week)."
@@ -1174,6 +1570,9 @@ function basket() {
         : isFund ? `${x.type}. Spreads your money so one company can't hurt much.`
         : `Among the strongest steady risers in its sector, with a profitable, low-debt business${x.fundamentals?.roe ? ` (return on equity ${num(x.fundamentals.roe, 0)}%)` : ""}.`,
       odds: x._swing ? outOf10(x.hist_win_rate) : null,
+      isFund,
+      hist: x._swing ? { p10: x.hist_p10, median: x.hist_median, p75: x.hist_p75, p90: x.hist_p90,
+        days: x.hist_days_median, daysMax: x.hist_days_p90, win: x.hist_win_rate, n: x.hist_trades } : null,
       news: x.news || (L.swing || []).find((y) => y.symbol === x.symbol)?.news || [],
     };
   });
@@ -1207,9 +1606,13 @@ function protectedSuggestions() {
   for (const b of (L.plan?.buy || [])) {
     const pk = swing.find((x) => x.symbol === b.symbol) || {};
     if (plan.stock < MIN_SHORT_TERM) break;             // short trades only pay off with larger amounts
-    out.push({ kind: "swing", amount: plan.stock, symbol: b.symbol, name: b.name, price: b.price, max_entry: b.max_entry, stop: b.stop,
+    out.push({ kind: "swing", amount: plan.stock, symbol: b.symbol, name: b.name,
+      strategy: b.strategy, strategy_name: pk.strategy_name, planId: b.id,
+      signal_date: b.signal_date, price: b.price, max_entry: b.max_entry, stop: b.stop,
       horizon: "Short term · about 1 week", sellRule: "The app will tell you when to sell (usually within a week).",
-      why: (SIMPLE[b.strategy] || {}).why, odds: outOf10(b.hist_win_rate), news: pk.news || [] });
+      why: (SIMPLE[b.strategy] || {}).why, odds: outOf10(b.hist_win_rate), news: pk.news || [],
+      hist: { p10: b.hist_p10, median: b.hist_median, p75: b.hist_p75, p90: b.hist_p90,
+        days: b.hist_days_median, daysMax: b.hist_days_p90, win: b.hist_win_rate, n: b.hist_trades } });
   }
   const lt = (L.long_term_safe || (L.long_term?.picks || []).filter((p) => p.large)).filter((p) => !(p.warnings || []).length && !(p.red_flags || []).length
 )
@@ -1235,6 +1638,85 @@ function protectedSuggestions() {
   return out.filter((x) => x.max_entry <= x.amount);
 }
 
+// ---------------------------------------------------------------- expectations from past cases
+const sgn = (v) => (v >= 0 ? "+" : "−");
+const moneySigned = (v) => `${sgn(v)}${inr(Math.abs(v))}`;
+const isFundSym = (sym) => sym === "NIFTYBEES" || sym === "GOLDBEES";
+const trailPct = (p) => (isFundSym(p.symbol) ? 0.10 : 0.12);
+
+function addBusinessDays(iso, n) {
+  const d = new Date(iso + "T00:00:00Z");
+  let k = 0;
+  while (k < n) { d.setUTCDate(d.getUTCDate() + 1); const w = d.getUTCDay(); if (w !== 0 && w !== 6) k++; }
+  return d.toISOString().slice(0, 10);
+}
+
+// Past results for this kind of holding: bad / typical / good case, in percent.
+function expectColumns(x) {
+  const H = S.latest?.expect?.holding || {};
+  if (x.kind === "swing") {
+    const h = x.hist || {};
+    if (h.median == null || h.p10 == null) return null;
+    const days = h.days || 5;
+    return [{ name: `After about ${days} day${days === 1 ? "" : "s"}`, bad: h.p10, typ: h.median, good: h.p75, best: h.p90,
+      pos: h.win, n: h.n }];
+  }
+  const src = (x.isFund ? H.fund : H.stock) || {};
+  return [["6m", "After ~6 months"], ["12m", "After ~12 months"]].map(([k, name]) => {
+    const r = src[k];
+    return r && r.n >= 8 ? { name, bad: r.p10, typ: r.median, good: r.p75, best: r.p90, pos: r.pct_positive, n: r.n } : null;
+  }).filter(Boolean);
+}
+
+function expectBlock(x, qty) {
+  const cols = expectColumns(x);
+  if (!cols || !cols.length || !qty) return "";
+  const base = qty * x.price;
+  const cell = (v) => { const g = (base * v) / 100;
+    return `<div><b class="${tone(g)}">${moneySigned(g)}</b></div><div class="muted small">sell price ${px(x.price * (1 + v / 100))} · ${pct(v, 0)}</div>`; };
+  const row = (label, key) => `<tr><td>${label}</td>${cols.map((c) => `<td>${cell(c[key])}</td>`).join("")}</tr>`;
+  const best = cols.map((c) => `${c.name.toLowerCase()}: ${pct(c.best, 0)} (${moneySigned((base * c.best) / 100)})`).join(" · ");
+  return `<div class="expect"><div class="expect-head">What to expect <span class="muted small">(from similar past cases, after charges)</span></div>
+    <div class="table-wrap"><table class="expect-table"><thead><tr><th></th>${cols.map((c) => `<th>${esc(c.name)}<div class="muted small">${c.pos != null ? Math.round(c.pos / 10) + " of 10 made money" : ""}</div></th>`).join("")}</tr></thead>
+      <tbody>${row("Bad case", "bad")}${row("Typical", "typ")}${row("Good case", "good")}</tbody></table></div>
+    <div class="small muted">Bad case: 1 in 10 past cases was this bad or worse. Good case: 1 in 4 did better. Best 1 in 10: ${best}.
+      Past results, not a promise.</div></div>`;
+}
+
+function holdLine(x) {
+  if (x.kind === "swing") {
+    const h = x.hist || {};
+    return `Usually sold in about ${h.days || 5} days (at most ${h.daysMax || 10}). The app tells you when.`;
+  }
+  return x.isFund ? "Hold for months; no end date. The app checks every month and tells you if to sell."
+    : "Hold 6 to 12 months. The app checks every month and tells you if to sell earlier.";
+}
+
+function orderDetails(x, qty) {
+  const L = S.latest || {};
+  const total = qty * x.max_entry;
+  const charges = Math.round(total * 0.003 + 16);
+  const maxLoss = Math.max(0, qty * (x.max_entry - x.stop));
+  const valid = L.data_date ? addBusinessDays(L.data_date, 3) : null;
+  const trail = x.kind === "long_term"
+    ? `<div class="line"><span class="ic">⬆</span><div>The safety price <b>rises as the price rises</b>: it always stays ${isFundSym(x.symbol) ? 10 : 12}% below the highest price since you bought. My Stocks shows the current one. Move your sell order up when it changes.</div></div>` : "";
+  return `<details><summary>All the trade details</summary>
+    <div class="line"><span class="ic">📅</span><div>Suggested on <b>${esc(fmtDate(L.data_date))}</b>. Valid for 3 trading days${valid ? ` (until <b>${esc(fmtDate(valid))}</b>)` : ""}. After that, use the newer list.</div></div>
+    <div class="line"><span class="ic">🧾</span><div><b>How to place it in your broker app:</b>
+      <ol class="small steps"><li>Search <b>${esc(x.symbol)}</b> (NSE).</li>
+        <li>Choose <b>BUY</b> · <b>Delivery</b> (CNC) · <b>Limit order</b>.</li>
+        <li>Price <b>${px(x.max_entry)}</b> · Quantity <b>${num(qty, 0)}</b>. A limit order means you never pay more than that.</li>
+        <li>Once it's bought, set a <b>stop-loss / GTT sell order</b> for all ${num(qty, 0)} shares with trigger price <b>${px(x.stop)}</b>.</li>
+        <li>Tap <b>"I bought this"</b> here and enter the price you paid.</li></ol></div></div>
+    <div class="line"><span class="ic">💵</span><div>About <b>${inr(total)}</b> in total, plus about <b>${inr(charges)}</b> in charges for buying and selling.</div></div>
+    <div class="line"><span class="ic">🛡</span><div>Most you could lose if the safety price is hit: about <b class="down">${inr(maxLoss)}</b>.</div></div>
+    ${trail}
+    <div class="line"><span class="ic">⏱</span><div>${esc(holdLine(x))}</div></div>
+    <p class="small">${esc(x.why || "")}${x.odds ? ` In the past 5 years, trades like this made money ${x.odds} out of 10 times.` : ""}</p>
+    ${x.news.length ? `<ul class="news">${x.news.slice(0, 3).map(newsItem).join("")}</ul>` : ""}
+  </details>`;
+}
+
 function suggestionCard(x) {
   const amt = x.amount;
   const qty = x.qty ?? Math.floor(amt / x.max_entry);
@@ -1243,16 +1725,31 @@ function suggestionCard(x) {
     <div class="row"><div><h3>${esc(x.name)}</h3><div class="muted small">${esc(x.type || x.symbol)}</div></div>
       <span class="badge ${x.kind === "swing" ? "b-watch" : "b-new"}">${esc(x.horizon)}</span></div>
     <div class="do">${qty ? `Buy <b>${shares(qty)}</b>` : `<span class="small">One share costs more than ${inr(amt)}. Skip.</span>`}</div>
-    ${qty ? `<div class="small">Pay up to <b>${px(x.max_entry)}</b> (about ${inr(qty * x.max_entry)}). Sell if it falls to <b>${px(x.stop)}</b>.</div>` : ""}
+    ${qty ? `<div class="small">Pay up to <b>${px(x.max_entry)}</b> (about ${inr(qty * x.max_entry)}). Sell if it falls to <b>${px(x.stop)}</b>${x.kind === "long_term" ? " (rises as the price rises)" : ""}.</div>` : ""}
     ${x.checks ? `<div class="small up" style="margin-top:6px">${esc(x.checks)}</div>` : ""}
-    <details><summary>Why? (optional)</summary>
-      <p class="small">${esc(x.why || "")}${x.odds ? ` In the past 5 years, trades like this made money ${x.odds} out of 10 times.` : ""}</p>
-      <p class="small muted">${esc(x.sellRule)}</p>
-      ${x.news.length ? `<ul class="news">${x.news.slice(0, 3).map(newsItem).join("")}</ul>` : ""}
-    </details>
+    ${qty ? `<div class="small" style="margin-top:6px">⏱ ${esc(holdLine(x))}</div>` : ""}
+    ${expectBlock(x, qty)}
+    ${qty ? orderDetails(x, qty) : ""}
     ${qty ? `<div class="btns">${mine ? `<span class="small up">✓ In My Stocks</span>`
       : `<button class="btn primary" data-mark="${esc(x.kind)}|${esc(x.symbol)}">✅ I bought this</button>`}</div>` : ""}
   </article>`;
+}
+
+// All long-term holdings together, very roughly
+function roughGuide(list) {
+  const longs = list.filter((x) => x.kind === "long_term" && expectColumns(x).length);
+  if (!longs.length) return "";
+  const q = (x) => x.qty ?? Math.floor(x.amount / x.max_entry);
+  const invested = longs.reduce((a, x) => a + q(x) * x.price, 0);
+  const at = (x, i) => { const c = expectColumns(x); return c[Math.min(i, c.length - 1)]; };
+  const sum = (key, i) => longs.reduce((a, x) => a + (q(x) * x.price * at(x, i)[key]) / 100, 0);
+  const rowFor = (i, label) => `<tr><td>${label}</td><td class="down">${moneySigned(sum("bad", i))}</td>
+    <td><b class="${tone(sum("typ", i))}">${moneySigned(sum("typ", i))}</b></td><td class="up">${moneySigned(sum("good", i))}</td></tr>`;
+  const two = longs.every((x) => expectColumns(x).length > 1);
+  return `<div class="card small"><b>The long-term part together</b> (${inr(invested)} invested), very roughly:
+    <div class="table-wrap"><table class="expect-table"><thead><tr><th></th><th>Bad case</th><th>Typical</th><th>Good case</th></tr></thead>
+      <tbody>${rowFor(0, "After ~6 months")}${two ? rowFor(1, "After ~12 months") : ""}</tbody></table></div>
+    <div class="muted">Holdings rarely all do badly or all do well at the same time, so the real range is usually narrower. Past results, not a promise.</div></div>`;
 }
 
 function renderSuggestions() {
@@ -1262,6 +1759,8 @@ function renderSuggestions() {
   const list = suggestions();
   const act = myPositions().map((p) => ({ p, s: positionStatus(p) })).filter((x) => x.s.action);
   let html = "";
+  const ageDays = L.data_date ? (Date.now() - new Date(L.data_date + "T00:00:00Z").getTime()) / 864e5 : 0;
+  if (ageDays > 4.5) html += `<div class="callout bad">These suggestions are from ${esc(fmtDate(L.data_date))} and may be out of date. Wait for the next update before buying.</div>`;
   if (!moneyIsSet()) html += planWelcome();
   else {
     const chips = [5000, 10000, 15000, 20000];
@@ -1290,6 +1789,7 @@ function renderSuggestions() {
       ${list.map((x) => esc(x.name.replace(/ Ltd\.?$/, ""))).join(" · ")}.
       <div class="muted" style="margin-top:4px">Each stock passed all checks: strong business, rising price, no bad news, market OK.</div></div>`;
   }
+  html += roughGuide(list);
   html += `<h2>Suggestions</h2>`;
   html += list.length ? list.map(suggestionCard).join("")
     : `<div class="card empty">🙏 No suggestions today. The app only suggests when the odds are clearly good.</div>`;
@@ -1300,7 +1800,10 @@ function renderSuggestions() {
     html += `<div class="card small"><div class="line"><span class="ic">⚡</span><div><b>Short term (about 1 week):</b> none today, because ${why}.</div></div>
       <div class="line"><span class="ic">🚫</span><div><b>Same-day trading:</b> never. SEBI found about 7 in 10 people who trade within the day lose money.</div></div></div>`;
   }
-  html += `<p class="small muted center">Buy at the market opening (9:15 AM). Updated ${esc(ago(L.generated))}.</p>`;
+  const until = L.data_date ? addBusinessDays(L.data_date, 3) : null;
+  html += `<div class="card small"><div class="line"><span class="ic">🔄</span><div><b>Suggestions can change.</b> They are re-checked every weekday evening,
+    so always use the latest list. Today's list is valid for 3 trading days${until ? ` (until ${esc(fmtDate(until))})` : ""}. If the price is above the "pay up to" price, skip it.</div></div></div>
+    <p class="small muted center">Buy at the market opening (9:15 AM). Updated ${esc(ago(L.generated))}.</p>`;
   el.innerHTML = html;
   const ws = $("#w-money-save");
   if (ws) ws.onclick = () => saveMoney(+$("#w-money").value);
@@ -1323,7 +1826,9 @@ function openMarkDialog(kind, sym) {
     const price = +$("#mp").value || x.price;
     const risk = x.price - x.stop;
     const my = myPositions();
-    my.push({ id: sym + "-" + Date.now(), symbol: sym, name: x.name, kind: kind, qty: +$("#mq").value || qty, price,
+    my.push({ id: sym + "-" + Date.now(), symbol: sym, name: x.name, kind: kind,
+      strategy: x.strategy, strategy_name: x.strategy_name, planId: x.planId,
+      qty: +$("#mq").value || qty, price,
       stop: kind === "swing" ? +(price - risk).toFixed(2) : x.stop, target: null,
       date: new Date().toISOString(), sellBy: kind === "swing" ? addDays(new Date().toISOString(), 16) : null,
       lastPrice: x.price });
@@ -1353,7 +1858,7 @@ const MAIN_TABS = ["today", "mystocks", "news", "more"];
 const TITLES = { help: "How to use", record: "Is it working?", swing: "All stock ideas", longterm: "Long-term details",
   market: "Market details", news: "Market news", settings: "Settings", mystocks: "My Stocks",
   invest: "Long-term investing", ideas: "All buy ideas", plan: "Daily plan", marketnews: "Market news",
-  advanced: "Advanced" };
+  live: "Live Intelligence", advanced: "Advanced" };
 
 function renderAll() {
   renderStatus();
@@ -1364,6 +1869,7 @@ function renderAll() {
   renderInvest();
   renderMore();
   renderHelp();
+  renderLiveDashboard();
   renderMarket();
   renderSwing();
   renderLongTerm();
@@ -1397,8 +1903,9 @@ function findPick(sym, strat) {
 }
 
 document.addEventListener("click", (e) => {
-  const t = e.target.closest("[data-tab],[data-goto],[data-filter],[data-buy],[data-sell],[data-ltinfo],[data-sold],[data-preset],[data-detail],[data-money],[data-mark]");
+  const t = e.target.closest("[data-tab],[data-goto],[data-filter],[data-buy],[data-sell],[data-ltinfo],[data-sold],[data-preset],[data-detail],[data-money],[data-mark],[data-refresh-live]");
   if (!t) return;
+  if (t.hasAttribute("data-refresh-live")) { refreshLive(); return; }
   if (t.dataset.preset) { saveCapital(+t.dataset.preset); return; }
   if (t.dataset.money) { saveMoney(+t.dataset.money); return; }
   if (t.dataset.mark) { const [k, sym] = t.dataset.mark.split("|"); openMarkDialog(k, sym); return; }

@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-from . import ai_notes, backtest, config, data, fundamentals, news, notify, tracker
+from . import ai_notes, backtest, config, data, fundamentals, live_analysis, news, notify, tracker
 from .strategies import SWING_STRATEGIES, Features, momentum_scores, pick_portfolio
 from .universe import load_nifty50, load_universe
 
@@ -380,8 +380,8 @@ def build_plan(tr: dict, last_date: str, bt: dict) -> dict:
         st = t["status"]
         strat = tracker.STRATS.get(t["strategy"])
         stats = bt.get(t["strategy"], {})
-        base = {"symbol": t["symbol"], "name": t.get("name") or t["symbol"], "strategy": t["strategy"],
-                "max_hold_days": strat.max_hold if strat else None}
+        base = {"id": t.get("id"), "symbol": t["symbol"], "name": t.get("name") or t["symbol"],
+                "strategy": t["strategy"], "max_hold_days": strat.max_hold if strat else None}
         if st == "pending":
             plan["buy"].append({
                 **base, "signal_date": t["signal_date"], "price": t["signal_close"], "max_entry": t["max_entry"],
@@ -389,13 +389,18 @@ def build_plan(tr: dict, last_date: str, bt: dict) -> dict:
                 "risk_pct": r2(t["risk"] / t["signal_close"] * 100) if t["signal_close"] else None,
                 "hist_win_rate": stats.get("win_rate"), "hist_avg_return": stats.get("avg_return"),
                 "hist_avg_win": stats.get("avg_win"), "hist_avg_loss": stats.get("avg_loss"),
+                "hist_p10": stats.get("p10_return"), "hist_p25": stats.get("p25_return"),
+                "hist_median": stats.get("median_return"), "hist_p75": stats.get("p75_return"),
+                "hist_p90": stats.get("p90_return"),
+                "hist_days_median": stats.get("days_median"), "hist_days_p90": stats.get("days_p90"),
                 "hist_avg_days": stats.get("avg_days"), "hist_trades": stats.get("trades"),
                 "alert_qty": shares_for(config.TRADE_AMOUNT, t["max_entry"])})
         elif st == "selling":
             last = t.get("last_price")
             plan["sell"].append({
                 **base, "reason": t.get("sell_reason", "exit_rule"), "entry": t.get("entry"),
-                "entry_date": t.get("entry_date"), "last_price": last,
+                "entry_date": t.get("entry_date"), "exit_signal_date": t.get("sell_signal_date"),
+                "last_price": last,
                 "ret_pct": r2((last / t["entry"] - 1 - config.ROUND_TRIP_COST) * 100) if last and t.get("entry") else None})
         elif st == "open":
             plan["hold"].append({
@@ -403,7 +408,9 @@ def build_plan(tr: dict, last_date: str, bt: dict) -> dict:
                 "last_price": t.get("last_price"), "days": t.get("days")})
         elif st in ("stop", "target") and t.get("exit_date") == last_date:
             # exit level was reached during the day: anyone still holding should sell at the open
-            plan["sell"].append({**base, "reason": st, "entry": t.get("entry"), "last_price": t.get("exit"),
+            plan["sell"].append({**base, "reason": st, "entry": t.get("entry"),
+                                 "entry_date": t.get("entry_date"), "exit_signal_date": t.get("exit_date"),
+                                 "last_price": t.get("exit"),
                                  "ret_pct": t.get("ret_pct")})
     return plan
 
@@ -447,6 +454,7 @@ def run_full(args) -> None:
 
     # ---- backtests
     bt = {}
+    outcomes: dict = {}
     if not args.no_backtest:
         for st in SWING_STRATEGIES:
             t1 = time.time()
@@ -465,6 +473,8 @@ def run_full(args) -> None:
                          {k: bt[st.key]["portfolio"].get(k) for k in ("trades", "win_rate", "total_profit",
                                                                     "per_year_profit", "worst_drop_pct")})
         inds = dict(zip(uni.symbol, uni.industry))
+        outcomes = backtest.holding_outcomes(f, inds, set(f.large[f.large].index))
+        log.info("holding outcomes: stock 6m %s | 12m %s", outcomes["stock"].get("6m"), outcomes["stock"].get("12m"))
         lt = backtest.backtest_momentum(f, inds)
         lt_guard = backtest.backtest_momentum(f, inds, trend_guard=True)
         # the app's actual long-term suggestions: Nifty 50 only, 4 stocks, one per sector
@@ -480,6 +490,7 @@ def run_full(args) -> None:
             "generated": datetime.now(timezone.utc).isoformat(), "data_from": str(f.close.index[0].date()),
             "data_to": last_date, "cost_round_trip_pct": config.ROUND_TRIP_COST * 100,
             "swing": bt, "long_term": lt, "long_term_guarded": lt_guard, "long_term_app": lt_app,
+            "holding_outcomes": outcomes,
             "notes": [
                 "Universe is today's Nifty 200, so the past excludes stocks that later dropped out "
                 "(survivorship bias). Real results will likely be somewhat lower.",
@@ -492,6 +503,7 @@ def run_full(args) -> None:
         try:
             old = json.loads((config.OUT_DIR / "backtest.json").read_text(encoding="utf-8"))
             bt = old.get("swing", {})
+            outcomes = old.get("holding_outcomes", {})
         except (OSError, json.JSONDecodeError):
             bt = {}
 
@@ -590,6 +602,7 @@ def run_full(args) -> None:
         "long_term_safe": [x for x in lt_safe if not x.get("red_flags")],
         "mid_safe": [x for x in mid_safe if not x.get("red_flags")],
         "funds": funds,
+        "expect": {"holding": outcomes, "cost_pct": round(config.ROUND_TRIP_COST * 100, 2)},
         "safe": {
             "enabled": config.SAFE_MODE, "trade_amount": config.TRADE_AMOUNT,
             "max_open_trades": config.MAX_OPEN_TRADES, "universe": "Nifty 50",
@@ -604,7 +617,10 @@ def run_full(args) -> None:
                         for k, (ok, why) in safe.items()},
         },
         # stocks to sell at the next open (exit signal at the close, or exit level hit today)
-        "sell_today": [{"symbol": s["symbol"], "reason": s["reason"], "price": s.get("last_price"),
+        "sell_today": [{"id": s.get("id"), "symbol": s["symbol"], "name": s.get("name"),
+                        "strategy": s.get("strategy"), "reason": s["reason"],
+                        "entry": s.get("entry"), "entry_date": s.get("entry_date"),
+                        "exit_signal_date": s.get("exit_signal_date"), "price": s.get("last_price"),
                         "ret_pct": s.get("ret_pct")} for s in plan["sell"]],
         "track_summary": tracker.summary(tr),
         "strategies": [{"key": s.key, "name": s.name, "why": s.plain_english, "exit": s.how_to_exit,
@@ -618,7 +634,7 @@ def run_full(args) -> None:
     }
     write_json("latest.json", latest)
     write_json("market_news.json", {"generated": latest["generated"], "items": mkt_news})
-    write_json("live.json", {"updated": latest["generated"], "market_open": False, "quotes": {}})
+    write_json("live.json", live_analysis.empty_snapshot(latest["generated"]))
 
     # ---- alerts
     if config.SAFE_MODE:
@@ -649,14 +665,24 @@ def market_is_open() -> bool:
     n = data.now_ist()
     if n.weekday() >= 5:
         return False
+    seconds = n.hour * 3600 + n.minute * 60 + n.second
+    return 9 * 3600 + 15 * 60 <= seconds < 15 * 3600 + 30 * 60
+
+
+def market_poll_window() -> bool:
+    """Allow a small buffer for the scheduled job without claiming the market is open."""
+    n = data.now_ist()
+    if n.weekday() >= 5:
+        return False
     mins = n.hour * 60 + n.minute
     return 9 * 60 + 10 <= mins <= 15 * 60 + 40
 
 
 def run_live(args) -> None:
-    if not market_is_open() and not args.force:
+    if not market_poll_window() and not args.force:
         log.info("Market closed - nothing to do")
         return
+    open_now = market_is_open()
     tr = tracker.load()
     syms = sorted({t["symbol"] for t in tr["trades"] if t["status"] in ("open", "pending", "selling")})
     try:
@@ -665,14 +691,22 @@ def run_live(args) -> None:
                       | {x["symbol"] for x in latest.get("long_term", {}).get("picks", [])})
     except (OSError, json.JSONDecodeError):
         pass
+    previous = None
+    try:
+        previous = json.loads((config.OUT_DIR / "live.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
     quotes = data.live_quotes(syms)
-    events = tracker.update_live(tr, quotes)
+    events = tracker.update_live(tr, live_analysis.fresh_quotes(quotes))
     tracker.save(tr)
-    write_json("live.json", {"updated": datetime.now(timezone.utc).isoformat(),
-                             "market_open": market_is_open(), "quotes": quotes})
+    updated = datetime.now(timezone.utc).isoformat()
+    snapshot = live_analysis.build_snapshot(
+        quotes, [*syms, "NIFTY"], previous, open_now, updated=updated)
+    write_json("live.json", snapshot)
     if events:
         notify.send("Stock Finder - live alert", "\n".join(notify.format_event(e) for e in events), "high")
-    log.info("live: %d quotes, %d events", len(quotes), len(events))
+    log.info("live: %d/%d fresh quotes, %d events (%s)", snapshot["fresh_quotes"],
+             snapshot["requested"], len(events), snapshot["feed_status"])
 
 
 def run_morning(args) -> None:

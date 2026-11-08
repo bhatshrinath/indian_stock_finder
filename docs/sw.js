@@ -1,6 +1,6 @@
 /* Offline-friendly service worker: app shell cached, data always fetched fresh
    (falls back to the last cached copy when offline). */
-const CACHE = "sf-v13";
+const CACHE = "sf-v15";
 const SHELL = ["./", "index.html", "app.css", "app.js", "icon.svg", "manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
