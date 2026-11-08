@@ -116,6 +116,9 @@ def main() -> None:
             yearly.setdefault(b["d"][:4], [a["p"], b["p"]])[1] = b["p"]
         rows.append(f"{label} | {r['cagr']}% (Nifty {r['bench_cagr']}%) | {r['max_drawdown']}% (Nifty {r['bench_max_drawdown']}%) | "
                     f"{r['pct_months_positive']}% | " + ", ".join(f"{y}: {100 * (v[1] / v[0] - 1):+.1f}%" for y, v in yearly.items()))
+    print("::notice title=safe-study::" + "%0A".join(rows), flush=True)
+    print("\n".join(rows))
+    rows = []                                           # separate notice: keeps each under the size limit
     # ---- long-term holding RULES: what rule keeps gains without cutting winners short?
     rows.append("HOLDING RULES (Nifty 50, 3 stocks) | horizon | n | made money | bad p10 | typical | good p75 | best p90 | mean | ended by rule")
     for label, kw in (("12% rising safety price", dict(stock_trail=0.12, monthly_check=False)),
@@ -140,7 +143,7 @@ def main() -> None:
             if r_.get("n"):
                 rows.append(f"{label} | {hz} | {r_['n']} | {r_['pct_positive']}% | {r_['p10']}% | {r_['median']}% | "
                             f"{r_['p75']}% | {r_['p90']}% | {r_['mean']}% | {r_['stopped_pct']}%")
-    print("::notice title=safe-study::" + "%0A".join(rows), flush=True)
+    print("::notice title=holding-rules::" + "%0A".join(rows), flush=True)
     print("\n".join(rows))
 
 
