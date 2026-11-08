@@ -35,7 +35,8 @@ def send(title: str, body: str, priority: str = "default") -> None:
         try:
             headers = {"Title": title.encode("utf-8"), "Priority": priority, "Tags": "chart_with_upwards_trend"}
             if config.APP_URL:
-                headers["Click"] = config.APP_URL
+                headers["Click"] = config.APP_URL                       # tap the notification
+                headers["Actions"] = "view, Open app, %s" % config.APP_URL   # and an "Open app" button
             requests.post(f"{config.NTFY_SERVER}/{config.NTFY_TOPIC}", data=body.encode("utf-8"),
                           headers=headers, timeout=15)
         except Exception as exc:

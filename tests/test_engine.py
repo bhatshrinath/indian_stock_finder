@@ -371,3 +371,17 @@ def test_holding_outcomes_and_trade_percentiles_are_ordered():
     res = backtest.backtest_swing(f, SWING_STRATEGIES[1])
     assert res["p10_return"] <= res["median_return"] <= res["p90_return"]
     assert res["p25_return"] <= res["p75_return"] and res["days_median"] <= res["days_p90"]
+
+
+def test_alert_carries_app_link(monkeypatch):
+    from engine import notify
+    sent = {}
+    monkeypatch.setattr(config, "NTFY_TOPIC", "sf-test-topic")
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setattr(config, "SMTP_USER", "")
+    monkeypatch.setattr(config, "APP_URL", "https://example.github.io/indian_stock_finder/")
+    monkeypatch.setattr(notify.requests, "post", lambda url, data=None, headers=None, timeout=None, **k: sent.update(url=url, headers=headers))
+    notify.send("Title", "Body", "high")
+    assert sent["url"].endswith("/sf-test-topic")
+    assert sent["headers"]["Click"] == "https://example.github.io/indian_stock_finder/"
+    assert "Open app" in sent["headers"]["Actions"] and sent["headers"]["Priority"] == "high"

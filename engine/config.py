@@ -91,6 +91,9 @@ ALERT_EMAIL_TO = os.getenv("ALERT_EMAIL_TO", "").strip()
 ANTHROPIC_API_KEY = (os.getenv("ANTHROPIC_API_KEY", "").strip()
                      if os.getenv("AI_NOTES", "").strip().lower() == "on" else "")
 AI_MODEL = os.getenv("AI_MODEL", "claude-opus-5-5")
-APP_URL = os.getenv("APP_URL", "").strip()
+# link opened when an alert is tapped; built from the repository name when not given
+_repo = os.getenv("GITHUB_REPOSITORY", "")
+APP_URL = os.getenv("APP_URL", "").strip() or (
+    "https://%s.github.io/%s/" % tuple(_repo.split("/", 1)) if "/" in _repo else "")
 
 USER_AGENT = "indian-stock-finder/1.0 (+https://github.com/)"
