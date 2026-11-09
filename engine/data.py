@@ -555,6 +555,23 @@ def load_demo(symbols: list[str], days: int = 900, seed: int = 33) -> Prices:
 
 
 # ======================================================================= entry point
+def drop_unfinished_session(p: Prices, now: datetime | None = None) -> Prices:
+    """The daily engine must only see COMPLETED sessions. While today's session is still running
+    (or Yahoo has not finalised it, before 4:15 PM IST), today's partial candle is ignored."""
+    now = now or now_ist()
+    if len(p.close) < 2:
+        return p
+    last = p.close.index[-1].date()
+    finished = now.date() > last or (now.date() == last and now.hour * 60 + now.minute >= 16 * 60 + 15)
+    if finished:
+        return p
+    log.info("Ignoring today's unfinished session (%s)", last)
+    cut = lambda x: x.iloc[:-1] if x is not None else None
+    return Prices(cut(p.open), cut(p.high), cut(p.low), cut(p.close), cut(p.volume),
+                  cut(p.index_close), cut(p.index_high), cut(p.index_low),
+                  p.delivery_pct, p.source, p.index_pe, p.index_pb)
+
+
 def load_prices(symbols: list[str], demo: bool = False) -> Prices:
     if demo:
         return load_demo(symbols)
@@ -565,9 +582,9 @@ def load_prices(symbols: list[str], demo: bool = False) -> Prices:
             p.delivery_pct, p.index_pe, p.index_pb = dp, pe, pb
         except Exception as exc:
             log.warning("NSE extras failed: %s", exc)
-        return p
+        return drop_unfinished_session(p)
     log.warning("Falling back to NSE bhavcopy history")
     p = load_nse_bhavcopy(symbols)
     if p is None:
         raise RuntimeError("No market data source available (Yahoo and NSE both failed)")
-    return p
+    return drop_unfinished_session(p)

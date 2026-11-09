@@ -413,3 +413,16 @@ def test_live_publish_keeps_a_single_commit(tmp_path, monkeypatch):
     shown = subprocess.run(["git", "--git-dir", str(remote), "show", live_session.BRANCH + ":live.json"],
                            capture_output=True, text=True, check=True).stdout
     assert '"updated": 3' in shown
+
+
+def test_unfinished_session_is_ignored():
+    from datetime import datetime
+    p = random_walk_prices(seed=15, days=300)
+    last = p.close.index[-1]
+    mid = datetime(last.year, last.month, last.day, 11, 0)            # market still open on the last candle's day
+    cut = data.drop_unfinished_session(p, now=mid)
+    assert len(cut.close) == 299 and len(cut.index_close) == 299
+    late = datetime(last.year, last.month, last.day, 16, 30)          # after the close: candle is final
+    assert len(data.drop_unfinished_session(p, now=late).close) == 300
+    nxt = datetime(last.year, last.month, last.day, 9, 0) + __import__("datetime").timedelta(days=1)
+    assert len(data.drop_unfinished_session(p, now=nxt).close) == 300  # next morning: yesterday is final
