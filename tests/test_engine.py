@@ -385,3 +385,31 @@ def test_alert_carries_app_link(monkeypatch):
     assert sent["url"].endswith("/sf-test-topic")
     assert sent["headers"]["Click"] == "https://example.github.io/indian_stock_finder/"
     assert "Open app" in sent["headers"]["Actions"] and sent["headers"]["Priority"] == "high"
+
+
+def test_live_session_phases():
+    from datetime import datetime
+    from engine.live_session import phase
+    mon = lambda h, m: datetime(2026, 11, 9, h, m)         # a Monday
+    assert phase(mon(8, 50)) == "wait" and phase(mon(9, 9)) == "wait"
+    assert phase(mon(9, 10)) == "run" and phase(mon(12, 0)) == "run" and phase(mon(15, 40)) == "run"
+    assert phase(mon(15, 41)) == "done"
+    assert phase(datetime(2026, 11, 7, 11, 0)) == "skip"   # Saturday
+
+
+def test_live_publish_keeps_a_single_commit(tmp_path, monkeypatch):
+    import subprocess
+    from engine import live_session
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    monkeypatch.setenv("LIVE_PUBLISH_URL", str(remote))
+    f = tmp_path / "live.json"
+    for n in (1, 2, 3):
+        f.write_text('{"updated": %d}' % n, encoding="utf-8")
+        assert live_session.publish([f])
+    log = subprocess.run(["git", "--git-dir", str(remote), "log", "--oneline", live_session.BRANCH],
+                         capture_output=True, text=True, check=True).stdout.strip().splitlines()
+    assert len(log) == 1                                   # force-push: history never grows
+    shown = subprocess.run(["git", "--git-dir", str(remote), "show", live_session.BRANCH + ":live.json"],
+                           capture_output=True, text=True, check=True).stdout
+    assert '"updated": 3' in shown

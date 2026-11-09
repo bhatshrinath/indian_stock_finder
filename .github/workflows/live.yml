@@ -3,8 +3,7 @@ name: Live prices
 # Every 15 minutes during NSE hours (09:15-15:30 IST = 03:45-10:00 UTC), Mon-Fri.
 # GitHub may delay scheduled runs by a few minutes at busy times.
 on:
-  schedule:
-    - cron: "*/15 3-10 * * 1-5"
+  # The automatic schedule moved to live-session.yml (one job that keeps itself running).
   workflow_dispatch:
 
 permissions:

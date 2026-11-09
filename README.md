@@ -109,7 +109,7 @@ After that it runs by itself:
 | Workflow | When (IST) | What it does |
 |---|---|---|
 | **Daily scan** | 6:15 PM, Mon-Fri | Downloads 5 years of data, runs all backtests, finds tomorrow's ideas, updates the long-term portfolio, reads news, records the track record, sends alerts |
-| **Live prices** | About every 15 min, 9:15 AM-3:30 PM | Publishes quote freshness plus intraday price/VWAP/momentum context, and alerts only from a fresh current-session quote if a recommended trade touches its stop-loss or target |
+| **Live session** | Starts around 9 AM, runs until 3:40 PM, Mon-Fri | One job that keeps itself running and refreshes prices about every 2 minutes, checks stop-loss levels, and alerts only from a fresh current-session quote. It starts from several time slots because GitHub's free scheduler can run late or skip runs; if the app says prices are delayed, start it by hand: **Actions → Live session → Run workflow**. Live prices are published to the `live-data` branch (no site rebuilds) |
 | **Morning reminder** | 8:45 AM, Mon-Fri | Sends today's buy list (buy limit, stop-loss, target) to your phone before the market opens (needs an alert channel below) |
 | **Tests** | On code changes | Checks the engine (including a test that the backtest never "peeks" at future prices) |
 

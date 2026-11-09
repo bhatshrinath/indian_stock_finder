@@ -4,7 +4,7 @@ name: Morning reminder
 # Sends only if an alert channel is set up (NTFY_TOPIC / Telegram / Gmail secrets).
 on:
   schedule:
-    - cron: "15 3 * * 1-5"
+    - cron: "17 3 * * 1-5"
   workflow_dispatch:
 
 permissions:

@@ -1,9 +1,12 @@
 name: Daily scan
 
-# After market close (NSE closes 15:30 IST). 12:45 UTC = 18:15 IST, Mon-Fri.
+# After market close (NSE closes 15:30 IST). 12:47 UTC = 18:17 IST, Mon-Fri. GitHub can run schedules late or skip
+# them, so two later backup slots exist; a backup slot does nothing when today's scan already ran.
 on:
   schedule:
-    - cron: "45 12 * * 1-5"
+    - cron: "47 12 * * 1-5"
+    - cron: "27 13 * * 1-5"
+    - cron: "7 15 * * 1-5"
   workflow_dispatch:
   # also refresh the published data whenever the engine code changes
   push:
@@ -26,12 +29,24 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Skip a backup slot when today's scan already ran
+        id: check
+        run: |
+          done=false
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            today=$(date -u +%Y-%m-%d)
+            if grep -Eq "\"generated\":\"${today}T(1[1-9]|2[0-3])" docs/data/latest.json 2>/dev/null; then done=true; fi
+          fi
+          echo "done=$done" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
+        if: steps.check.outputs.done != 'true'
         with:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
+        if: steps.check.outputs.done != 'true'
       - name: Run full scan, backtests and recommendations
+        if: steps.check.outputs.done != 'true'
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -47,6 +62,7 @@ jobs:
           APP_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
         run: python -m engine.run --mode full
       - name: Publish data
+        if: steps.check.outputs.done != 'true'
         run: |
           git config user.name "stock-finder-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

@@ -176,98 +176,30 @@ async function getJSON(name) {
   return r.json();
 }
 
-// ---------------------------------------------------------------- live prices straight from this device
-// GitHub's free scheduler can run late or skip runs, so while the market is open the app also asks
-// Yahoo Finance directly (one-minute prices). If the browser is not allowed to, it quietly keeps
-// using the server snapshot and the status line says how old the prices are.
-const YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/";
-const yahooSymbol = (s) => (s === "NIFTY" ? "^NSEI" : `${s}.NS`);
-
-function marketWindowIST() {
-  const n = istNow();
-  const wd = n.getUTCDay();
-  const mins = n.getUTCHours() * 60 + n.getUTCMinutes();
-  return wd >= 1 && wd <= 5 && mins >= 9 * 60 + 10 && mins <= 15 * 60 + 40;
+// ---------------------------------------------------------------- live snapshot
+// A GitHub job refreshes live prices about every 2 minutes while the market is open and publishes them to the
+// "live-data" branch (no site rebuild, so it is fast). The copy on the site is the fallback. Newest one wins.
+function liveRawUrl() {
+  const host = location.hostname;
+  if (!host.endsWith(".github.io")) return null;
+  const owner = host.slice(0, host.length - ".github.io".length);
+  const repo = location.pathname.split("/")[1];
+  return repo ? `https://raw.githubusercontent.com/${owner}/${repo}/live-data/live.json` : null;
 }
 
-function liveSymbols() {
-  const L = S.latest || {};
-  const set = new Set(["NIFTY"]);
-  try { suggestions().forEach((x) => set.add(x.symbol)); } catch { /* ignore */ }
-  myPositions().forEach((p) => set.add(p.symbol));
-  const plan = L.plan || {};
-  [...(plan.buy || []), ...(plan.hold || []), ...(plan.sell || [])].forEach((x) => set.add(x.symbol));
-  (L.swing || []).slice(0, 8).forEach((x) => set.add(x.symbol));
-  return [...set].filter(Boolean).slice(0, 24);
-}
-
-async function fetchYahooQuote(sym) {
-  const res = await fetch(`${YAHOO_CHART}${encodeURIComponent(yahooSymbol(sym))}?range=1d&interval=1m`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const j = await res.json();
-  const r = j?.chart?.result?.[0];
-  const ts = r?.timestamp || [];
-  const qd = r?.indicators?.quote?.[0] || {};
-  const bars = [];
-  for (let i = 0; i < ts.length; i++) {
-    const c = qd.close?.[i];
-    if (c == null || !Number.isFinite(c)) continue;
-    bars.push({ t: ts[i] * 1000, o: qd.open?.[i], h: qd.high?.[i] ?? c, l: qd.low?.[i] ?? c, c, v: qd.volume?.[i] || 0 });
-  }
-  if (!bars.length) throw new Error("no price bars");
-  const last = bars[bars.length - 1];
-  const prev = r.meta?.chartPreviousClose ?? r.meta?.previousClose ?? null;
-  const open = bars.find((b) => b.o != null)?.o ?? null;
-  const high = Math.max(...bars.map((b) => b.h));
-  const low = Math.min(...bars.map((b) => b.l));
-  let pv = 0, vv = 0;
-  for (const b of bars) if (b.v > 0) { pv += ((b.h + b.l + b.c) / 3) * b.v; vv += b.v; }
-  const back = (min) => {
-    const cutoff = last.t - min * 60000;
-    let ref = null;
-    for (const b of bars) { if (b.t <= cutoff) ref = b.c; else break; }
-    return ref ? (last.c / ref - 1) * 100 : null;
-  };
-  const r2 = (x) => (x == null ? null : Math.round(x * 100) / 100);
-  const delay = Math.max(0, Math.round((Date.now() - last.t) / 1000));
-  const fresh = indiaDateOf(last.t) === indiaDate() && delay <= 20 * 60;
-  return {
-    price: r2(last.c), open: r2(open), prev_close: r2(prev), day_high: r2(high), day_low: r2(low),
-    date: indiaDateOf(last.t), asof: new Date(last.t).toISOString(), source: "Yahoo Finance (direct from this device)",
-    is_intraday: true, is_fresh: fresh, stale: !fresh, delay_seconds: delay,
-    change: prev != null ? r2(last.c - prev) : null, change_pct: prev ? r2((last.c / prev - 1) * 100) : null,
-    volume: Math.round(vv), vwap: vv > 0 ? r2(pv / vv) : null, return_5m: r2(back(5)), return_15m: r2(back(15)),
-    range_position: high > low ? Math.round(((last.c - low) / (high - low)) * 1000) / 10 : null,
-  };
-}
-
-async function refreshClientLive() {
-  if (S.clientLiveOff || !S.latest || !marketWindowIST()) return;
-  const syms = liveSymbols();
-  const results = await Promise.allSettled(syms.map(fetchYahooQuote));
-  const quotes = {};
-  results.forEach((r, i) => { if (r.status === "fulfilled") quotes[syms[i]] = r.value; });
-  const got = Object.keys(quotes).length;
-  if (!got) {
-    S.clientLiveFails = (S.clientLiveFails || 0) + 1;
-    if (S.clientLiveFails >= 2) S.clientLiveOff = true;     // blocked by the browser or no network: stop retrying this visit
-    return;
-  }
-  S.clientLiveFails = 0;
-  const base = S.live || {};
-  const fresh = Object.values(quotes).filter((q) => q.is_fresh).length;
-  const now = new Date().toISOString();
-  S.live = {
-    ...base, updated: now, market_open: true,
-    feed_status: fresh === 0 ? "delayed" : fresh / syms.length < 0.75 ? "partial" : "near_live",
-    requested: syms.length, received: got, fresh_quotes: fresh,
-    coverage_pct: Math.round((got / syms.length) * 1000) / 10,
-    fresh_coverage_pct: Math.round((fresh / syms.length) * 1000) / 10,
-    last_good_update: fresh ? now : (base.last_good_update ?? null),
-    provider: "Yahoo Finance (direct from this device)",
-    data_delay_note: "Prices fetched by this app straight from Yahoo Finance about once a minute. Free data can be delayed or wrong, so confirm every price in your broker app.",
-    quotes: { ...(base.quotes || {}), ...quotes },
-  };
+async function getLive() {
+  const urls = [];
+  const raw = liveRawUrl();
+  if (raw) urls.push(`${raw}?t=${Date.now()}`);
+  urls.push(`${DATA}live.json?t=${Date.now()}`);
+  const results = await Promise.allSettled(urls.map((u) => fetch(u, { cache: "no-store" }).then((r) => {
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  })));
+  const ok = results.filter((r) => r.status === "fulfilled" && r.value && r.value.quotes).map((r) => r.value);
+  if (!ok.length) throw new Error("live.json unavailable");
+  ok.sort((a, b) => new Date(b.updated || 0) - new Date(a.updated || 0));
+  return ok[0];
 }
 
 // remember the highest price seen since buying (the long-term safety price follows it)
@@ -285,12 +217,11 @@ function updateHighs() {
 
 async function loadAll() {
   try {
-    const [latest, live, news] = await Promise.allSettled([getJSON("latest.json"), getJSON("live.json"), getJSON("market_news.json")]);
+    const [latest, live, news] = await Promise.allSettled([getJSON("latest.json"), getLive(), getJSON("market_news.json")]);
     if (latest.status === "fulfilled") S.latest = latest.value;
     if (live.status === "fulfilled") S.live = live.value;
     if (news.status === "fulfilled") S.news = news.value;
   } catch (e) { console.warn(e); }
-  try { await refreshClientLive(); } catch (e) { console.warn(e); }
   updateHighs();
   renderAll();
   checkAlerts();
@@ -300,8 +231,7 @@ async function refreshLive() {
   if (S.refreshingLive) return;
   S.refreshingLive = true;
   renderLiveDashboard();
-  try { S.live = await getJSON("live.json"); } catch { /* keep the last good snapshot */ }
-  try { await refreshClientLive(); updateHighs(); renderAll(); checkAlerts(); } catch { /* keep what we have */ }
+  try { S.live = await getLive(); updateHighs(); renderAll(); checkAlerts(); } catch { /* keep the last good snapshot */ }
   finally { S.refreshingLive = false; renderLiveDashboard(); }
 }
 
@@ -2040,7 +1970,7 @@ document.addEventListener("click", (e) => {
   } else if (t.dataset.ltinfo) openLtInfo(t.dataset.ltinfo);
 });
 
-document.addEventListener("visibilitychange", () => { if (!document.hidden) { S.clientLiveOff = false; S.clientLiveFails = 0; loadAll(); } });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadAll(); });
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 showTab((location.hash && location.hash.slice(1)) || store.get(LS.tab, "today"));

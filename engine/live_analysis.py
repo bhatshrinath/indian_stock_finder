@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 
 DATA_DELAY_NOTE = (
-    "Free Yahoo Finance intraday data, refreshed by GitHub Actions about every 15 minutes. "
+    "Free Yahoo Finance intraday data, refreshed by a GitHub job about every 2 minutes while the market is open. "
     "It can be delayed or unavailable and is not an exchange-grade real-time feed."
 )
 
