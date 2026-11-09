@@ -20,7 +20,7 @@ import pandas as pd
 
 from . import ai_notes, backtest, config, data, fundamentals, live_analysis, news, notify, tracker
 from .strategies import SWING_STRATEGIES, Features, momentum_scores, pick_portfolio
-from .universe import load_nifty50, load_universe
+from .universe import load_nifty50, load_universe, nifty50_cached
 
 log = logging.getLogger("engine")
 
@@ -687,10 +687,17 @@ def run_live(args) -> None:
     syms = sorted({t["symbol"] for t in tr["trades"] if t["status"] in ("open", "pending", "selling")})
     try:
         latest = json.loads((config.OUT_DIR / "latest.json").read_text(encoding="utf-8"))
-        syms = sorted(set(syms) | {x["symbol"] for x in latest.get("swing", [])[:20]}
-                      | {x["symbol"] for x in latest.get("long_term", {}).get("picks", [])})
     except (OSError, json.JSONDecodeError):
-        pass
+        latest = {}
+    # everything the app shows: held trades, today's suggestions (stocks, mid-caps, funds), the plan,
+    # the strongest short-term setups, and the whole Nifty 50 (so stocks bought earlier stay covered)
+    wanted = set(syms) | nifty50_cached()
+    for key in ("buy", "sell", "hold"):
+        wanted |= {x["symbol"] for x in (latest.get("plan") or {}).get(key, [])}
+    for key in ("long_term_safe", "mid_safe", "funds"):
+        wanted |= {x["symbol"] for x in latest.get(key, [])}
+    wanted |= {x["symbol"] for x in latest.get("swing", [])[:10]}
+    syms = sorted(wanted)
     previous = None
     try:
         previous = json.loads((config.OUT_DIR / "live.json").read_text(encoding="utf-8"))

@@ -1,19 +1,24 @@
-name: Live session
+name: Live prices
 
-# Keeps live prices fresh all day: refreshes about every 2 minutes from 9:10 AM to 3:40 PM IST,
-# checks stop-loss levels and sends alerts. GitHub's free scheduler can run late or skip runs,
-# so it starts from several slots (the later ones only matter if an earlier one was missed),
-# and you can also start it by hand: Actions > Live session > Run workflow.
+# THE ONE THING TO START EACH TRADING MORNING (before 9 AM IST):  Actions > Live prices > Run workflow.
+# After that everything runs by itself: morning reminder, live prices about every 2 minutes until 3:40 PM,
+# stop-loss alerts, then the evening scan once the day's data is final (about 4:20 PM).
+# (GitHub's free scheduler does not fire for this repository, so the schedule lines below are only a bonus.)
+# Tick "Only send a test alert" to check that your phone receives alerts.
 on:
   schedule:
     - cron: "22 3 * * 1-5"    # 08:52 IST
     - cron: "52 3 * * 1-5"    # 09:22 IST
-    - cron: "37 5 * * 1-5"    # 11:07 IST
-    - cron: "52 8 * * 1-5"    # 14:22 IST
   workflow_dispatch:
+    inputs:
+      test_alert:
+        description: "Only send a test alert to my phone (nothing else)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: live-session
@@ -25,6 +30,18 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || vars.AUTO_RUN != 'off'
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GMAIL_USER: ${{ secrets.GMAIL_USER }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+      TRADE_AMOUNT: ${{ vars.TRADE_AMOUNT }}
+      SAFE_MODE: ${{ vars.SAFE_MODE }}
+      MAX_OPEN_TRADES: ${{ vars.MAX_OPEN_TRADES }}
+      APP_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,22 +49,14 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Refresh prices until the market closes
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
-          TRADE_AMOUNT: ${{ vars.TRADE_AMOUNT }}
-          SAFE_MODE: ${{ vars.SAFE_MODE }}
-          MAX_OPEN_TRADES: ${{ vars.MAX_OPEN_TRADES }}
-          APP_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+      - name: Send a test alert
+        if: ${{ inputs.test_alert }}
+        run: python -m engine.run --mode test
+      - name: Run the day (reminder, live prices, alerts, then the evening scan)
+        if: ${{ !inputs.test_alert }}
         run: python -m engine.live_session
       - name: Save the final state to the site
-        if: always()
+        if: ${{ always() && !inputs.test_alert }}
         run: |
           git config user.name "stock-finder-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

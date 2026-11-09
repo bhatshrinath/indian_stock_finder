@@ -61,5 +61,13 @@ def load_nifty50() -> set[str]:
     return set(_parse(config.NIFTY50_FALLBACK.read_text(encoding="utf-8-sig")).symbol)
 
 
+def nifty50_cached() -> set[str]:
+    """Nifty 50 symbols from the bundled list (no network): used by the live price loop."""
+    try:
+        return set(_parse(config.NIFTY50_FALLBACK.read_text(encoding="utf-8-sig")).symbol)
+    except (OSError, ValueError):
+        return set()
+
+
 def yahoo_ticker(symbol: str) -> str:
     return f"{symbol}.NS"

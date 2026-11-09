@@ -393,7 +393,8 @@ def test_live_session_phases():
     mon = lambda h, m: datetime(2026, 11, 9, h, m)         # a Monday
     assert phase(mon(8, 50)) == "wait" and phase(mon(9, 9)) == "wait"
     assert phase(mon(9, 10)) == "run" and phase(mon(12, 0)) == "run" and phase(mon(15, 40)) == "run"
-    assert phase(mon(15, 41)) == "done"
+    assert phase(mon(15, 41)) == "after" and phase(mon(16, 19)) == "after"   # closed, waiting for final data
+    assert phase(mon(16, 20)) == "done"                                     # time for the evening scan
     assert phase(datetime(2026, 11, 7, 11, 0)) == "skip"   # Saturday
 
 
@@ -426,3 +427,55 @@ def test_unfinished_session_is_ignored():
     assert len(data.drop_unfinished_session(p, now=late).close) == 300
     nxt = datetime(last.year, last.month, last.day, 9, 0) + __import__("datetime").timedelta(days=1)
     assert len(data.drop_unfinished_session(p, now=nxt).close) == 300  # next morning: yesterday is final
+
+
+def _session_env(monkeypatch, start):
+    """Run live_session.main with a fake clock; returns (clock, list of started workflows)."""
+    from datetime import datetime
+    from engine import live_session
+    started = []
+    clock = {"t": start}
+    monkeypatch.setattr(live_session, "dispatch", lambda wf: started.append(wf) or True)
+    monkeypatch.setattr(live_session, "publish", lambda files: True)
+    monkeypatch.setattr(live_session.run, "run_live", lambda a: None)
+    monkeypatch.setattr(live_session.run, "run_morning", lambda a: None)
+    monkeypatch.setattr(live_session.data, "now_ist", lambda: clock["t"])
+    return clock, started
+
+
+def test_session_starts_the_evening_scan_after_the_close(monkeypatch):
+    from datetime import datetime
+    from engine import live_session
+    clock, started = _session_env(monkeypatch, datetime(2026, 11, 9, 15, 30))        # Monday, still open
+    steps = iter([datetime(2026, 11, 9, 15, 45), datetime(2026, 11, 9, 16, 21)])
+    monkeypatch.setattr(live_session.time, "sleep", lambda s: clock.update(t=next(steps, clock["t"])))
+    assert live_session.main([]) == 0
+    assert started == ["daily.yml"]
+
+
+def test_session_started_after_the_scan_time_does_nothing(monkeypatch):
+    from datetime import datetime
+    from engine import live_session
+    clock, started = _session_env(monkeypatch, datetime(2026, 11, 9, 17, 0))
+    assert live_session.main([]) == 0 and started == []                              # no duplicate evening scans
+
+
+def test_session_hands_over_to_the_next_shift(monkeypatch):
+    from datetime import datetime
+    from engine import live_session
+    clock, started = _session_env(monkeypatch, datetime(2026, 11, 9, 11, 0))
+    monkeypatch.setattr(live_session.time, "sleep", lambda s: None)
+    assert live_session.main(["--max-minutes", "-1"]) == 0                           # time limit already reached
+    assert started == ["live-session.yml"]
+
+
+def test_dispatch_calls_the_github_api(monkeypatch):
+    from engine import live_session
+    sent = {}
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setattr(live_session.requests, "post",
+                        lambda url, **k: sent.update(url=url, **k) or type("R", (), {"status_code": 204})())
+    assert live_session.dispatch("daily.yml")
+    assert sent["url"].endswith("/repos/o/r/actions/workflows/daily.yml/dispatches")
+    assert sent["headers"]["Authorization"] == "Bearer x" and sent["json"]["ref"]

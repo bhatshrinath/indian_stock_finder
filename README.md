@@ -104,17 +104,25 @@ This is **near-live, not exchange-grade real time**: GitHub scheduling, Yahoo an
    Your app will be at `https://<your-username>.github.io/<repo-name>/`.
 4. **Run the first scan:** **Actions** tab → **Daily scan** → **Run workflow**. Wait about 5 minutes, then open the app.
 
-After that it runs by itself:
+### What runs, and what you start
 
-| Workflow | When (IST) | What it does |
+There are only **three** workflows (GitHub also shows its own automatic "pages build and deployment" job; ignore it).
+
+| Workflow | What it does | Who starts it |
 |---|---|---|
-| **Daily scan** | 6:15 PM, Mon-Fri | Downloads 5 years of data, runs all backtests, finds tomorrow's ideas, updates the long-term portfolio, reads news, records the track record, sends alerts |
-| **Live session** | Starts around 9 AM, runs until 3:40 PM, Mon-Fri | One job that keeps itself running and refreshes prices about every 2 minutes, checks stop-loss levels, and alerts only from a fresh current-session quote. It starts from several time slots because GitHub's free scheduler can run late or skip runs; if the app says prices are delayed, start it by hand: **Actions → Live session → Run workflow**. Live prices are published to the `live-data` branch (no site rebuilds) |
-| **Morning reminder** | 8:45 AM, Mon-Fri | Sends today's buy list (buy limit, stop-loss, target) to your phone before the market opens (needs an alert channel below) |
-| **Tests** | On code changes | Checks the engine (including a test that the backtest never "peeks" at future prices) |
+| **Live prices** | **Start it once each trading morning** (before 9 AM). Then the whole day runs by itself: morning reminder, live prices refreshed every minute or two until 3:40 PM, stop-loss alerts, and, once the day's data is final (about 4:20 PM), the evening scan | **You, one tap**: Actions → Live prices → Run workflow (or an outside timer, see below). Tick "Only send a test alert" to check your phone |
+| **Daily scan** | Downloads 5 years of data, runs the backtests, finds the next day's suggestions, updates the long-term list, reads news, records the track record, sends the plan | Started automatically by **Live prices** at about 4:20 PM, whenever the engine code changes, or by hand |
+| **Tests** | Checks the engine (including a test that the backtest never "peeks" at future prices) | Automatically on every code change |
 
-> GitHub pauses scheduled workflows in repos with no activity for 60 days. The bot's own data commits normally count as activity.
-> If a workflow ever shows as disabled, re-enable it from the Actions tab.
+**Why one morning tap?** GitHub's free scheduler does not fire for this repository (a test job that should have run every 10 minutes ran zero times in two hours),
+so nothing can be *scheduled*. Workflows started by hand or by another workflow work reliably, so one start chains everything. The schedule lines in the workflow files are only a bonus if GitHub's scheduler ever starts working.
+
+**To remove even the morning tap:** an outside timer can press the button for you, for example the free cron-job.org calling
+`POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/live-session.yml/dispatches` with body `{"ref":"main"}` at 8:50 AM Mon-Fri.
+It needs a GitHub fine-grained access token limited to this repository with "Actions: read and write", so only do it if you are comfortable storing that token with the timer service.
+
+Live prices are published to the `live-data` branch (a single commit that is overwritten, so no history growth and no site rebuilds).
+Free Yahoo prices are usually 1 to 3 minutes behind the exchange; always confirm the price in your broker app.
 
 ### Install on the phone
 Open the app link → **Android/Chrome:** ⋮ → *Add to Home screen*. **iPhone/Safari:** Share → *Add to Home Screen*.

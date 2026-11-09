@@ -1,7 +1,8 @@
 name: Daily scan
 
-# After market close (NSE closes 15:30 IST). 12:47 UTC = 18:17 IST, Mon-Fri. GitHub can run schedules late or skip
-# them, so two later backup slots exist; a backup slot does nothing when today's scan already ran.
+# The evening scan: new suggestions, backtests, long-term list, alerts. It is started automatically at about 4:20 PM IST
+# by the Live prices workflow (once the day's data is final), whenever the engine code changes, or by hand
+# (Actions > Daily scan > Run workflow). The schedule lines are only a bonus: GitHub's scheduler does not fire here.
 on:
   schedule:
     - cron: "47 12 * * 1-5"
@@ -35,7 +36,7 @@ jobs:
           done=false
           if [ "${{ github.event_name }}" = "schedule" ]; then
             today=$(date -u +%Y-%m-%d)
-            if grep -Eq "\"generated\":\"${today}T(1[1-9]|2[0-3])" docs/data/latest.json 2>/dev/null; then done=true; fi
+            if grep -Eq "\"generated\":\"${today}T(10:5[0-9]|1[1-9]|2[0-3])" docs/data/latest.json 2>/dev/null; then done=true; fi
           fi
           echo "done=$done" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5

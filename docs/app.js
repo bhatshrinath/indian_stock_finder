@@ -88,7 +88,7 @@ function feedView() {
   }
   if (f.market_open && age > 30 * 60 * 1000 && (key === "near_live" || key === "partial")) key = "delayed";
   const map = {
-    near_live: { cls: "good", label: "Near-live feed", icon: "●" },
+    near_live: { cls: "good", label: "Live prices (1–3 min delay)", icon: "●" },
     partial: { cls: "warn", label: "Partial feed", icon: "●" },
     delayed: { cls: "warn", label: "Prices delayed", icon: "●" },
     unavailable: { cls: "bad", label: "Feed unavailable", icon: "●" },
@@ -1749,7 +1749,11 @@ function orderDetails(x, qty) {
 
 function liveVsLimit(x) {
   const q = livePrice(x.symbol);
-  if (!q) return "";
+  if (!q) {
+    const n = istNow();
+    const open = n.getUTCDay() >= 1 && n.getUTCDay() <= 5 && n.getUTCHours() * 60 + n.getUTCMinutes() >= 9 * 60 + 10 && n.getUTCHours() * 60 + n.getUTCMinutes() <= 15 * 60 + 40;
+    return open ? `<div class="small muted" style="margin-top:6px">📡 Live price not available for this stock right now. Check it in your broker app.</div>` : "";
+  }
   const chg = quoteChange(q);
   const ok = q.price <= x.max_entry;
   return `<div class="small" style="margin-top:6px">📡 Live now <b>${px(q.price)}</b>${chg != null ? ` (${pct(chg, 1)})` : ""} · as of ${esc(fmtClock(q.asof))}
