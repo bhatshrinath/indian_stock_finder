@@ -1,6 +1,7 @@
 name: Live prices
 
-# THE ONE THING TO START EACH TRADING MORNING (before 9 AM IST):  Actions > Live prices > Run workflow.
+# STARTED AUTOMATICALLY each trading morning by the Google timer (see README, "Automatic start"), or by hand:
+# Actions > Live prices > Run workflow.
 # After that everything runs by itself: morning reminder, live prices about every 2 minutes until 3:40 PM,
 # stop-loss alerts, then the evening scan once the day's data is final (about 4:20 PM).
 # (GitHub's free scheduler does not fire for this repository, so the schedule lines below are only a bonus.)
@@ -9,6 +10,12 @@ on:
   schedule:
     - cron: "22 3 * * 1-5"    # 08:52 IST
     - cron: "52 3 * * 1-5"    # 09:22 IST
+  # A push that touches this file or automation/start-live.txt also starts it (pushes always work).
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/live-session.yml"
+      - "automation/start-live.txt"
   workflow_dispatch:
     inputs:
       test_alert:

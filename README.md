@@ -110,16 +110,26 @@ There are only **three** workflows (GitHub also shows its own automatic "pages b
 
 | Workflow | What it does | Who starts it |
 |---|---|---|
-| **Live prices** | **Start it once each trading morning** (before 9 AM). Then the whole day runs by itself: morning reminder, live prices refreshed every minute or two until 3:40 PM, stop-loss alerts, and, once the day's data is final (about 4:20 PM), the evening scan | **You, one tap**: Actions → Live prices → Run workflow (or an outside timer, see below). Tick "Only send a test alert" to check your phone |
+| **Live prices** | **Starts itself each trading morning** (about 8:40 AM, once the timer below is set up). Then the whole day runs by itself: morning reminder, live prices refreshed every minute or two until 3:40 PM, stop-loss alerts, and, once the day's data is final (about 4:20 PM), the evening scan | The **Google timer** (see "Automatic start" below), or by hand: Actions → Live prices → Run workflow. Tick "Only send a test alert" to check your phone |
 | **Daily scan** | Downloads 5 years of data, runs the backtests, finds the next day's suggestions, updates the long-term list, reads news, records the track record, sends the plan | Started automatically by **Live prices** at about 4:20 PM, whenever the engine code changes, or by hand |
 | **Tests** | Checks the engine (including a test that the backtest never "peeks" at future prices) | Automatically on every code change |
 
-**Why one morning tap?** GitHub's free scheduler does not fire for this repository (a test job that should have run every 10 minutes ran zero times in two hours),
-so nothing can be *scheduled*. Workflows started by hand or by another workflow work reliably, so one start chains everything. The schedule lines in the workflow files are only a bonus if GitHub's scheduler ever starts working.
+**Why does something need to start it?** GitHub's free scheduler does not fire for this repository (a test job that should have run every 10 minutes ran zero times in two hours),
+so GitHub cannot start the day on its own. Workflows started by hand, by a push, or by another workflow work reliably, so one start chains everything.
 
-**To remove even the morning tap:** an outside timer can press the button for you, for example the free cron-job.org calling
-`POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/live-session.yml/dispatches` with body `{"ref":"main"}` at 8:50 AM Mon-Fri.
-It needs a GitHub fine-grained access token limited to this repository with "Actions: read and write", so only do it if you are comfortable storing that token with the timer service.
+### Automatic start (one-time setup, about 10 minutes, then nothing to do ever again)
+
+A free Google timer starts the day for you at about 8:40 AM on weekdays (and backs up the evening scan at 4:40 PM). Google's timers are dependable and the access token stays inside your own Google account.
+
+1. **Make a GitHub access token.** GitHub → your profile picture → **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens** → **Generate new token**.
+   Name it `stock-finder-timer`, expiration **1 year**, *Repository access* → **Only select repositories** → `indian_stock_finder`,
+   *Repository permissions* → **Actions: Read and write**. Generate and copy the token (it starts with `github_pat_`).
+2. **Create the timer.** Go to <https://script.google.com> → **New project**. Delete the sample code and paste in everything from `automation/google-apps-script.gs` (in this repository).
+3. **Add the token.** Left sidebar → **Project Settings** (gear) → *Script properties* → **Add script property**: name `GITHUB_TOKEN`, value = the token. Also tick **Show "appsscript.json" manifest file**, open it in the editor and set `"timeZone": "Asia/Kolkata"`.
+4. **Switch it on.** Back in **Editor**, choose the function **createTriggers** in the drop-down and press **Run**. Approve the permissions Google asks for (it only needs to call the web).
+5. **Test.** Choose **startLivePrices** and press **Run**. The log should say `HTTP 204`, and the **Actions** tab shows a new **Live prices** run.
+
+Renew the token once a year (the same steps 1 and 3). Weekends are skipped automatically. If you ever want to start it manually, use Actions → Live prices → Run workflow, or edit `automation/start-live.txt` and push.
 
 Live prices are published to the `live-data` branch (a single commit that is overwritten, so no history growth and no site rebuilds).
 Free Yahoo prices are usually 1 to 3 minutes behind the exchange; always confirm the price in your broker app.
