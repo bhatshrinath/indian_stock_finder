@@ -13,6 +13,7 @@ def note(msg: str) -> None:
 
 
 def main() -> None:
+    cors_probe()
     import yfinance as yf
     note(f"yfinance {yf.__version__}, pandas {pd.__version__}")
     tickers = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "^NSEI"]
@@ -44,6 +45,21 @@ def main() -> None:
         cov = pr.close.notna().sum(axis=1).tail(3)
         note(f"engine loader: last={pr.last_date.date()} index_last={pr.index_close.index[-1].date()} "
              "coverage last 3: " + " | ".join(f"{d.date()}:{c}" for d, c in cov.items()))
+
+
+def cors_probe() -> None:
+    """Can a browser on the app's own address call Yahoo directly? (needs a CORS allow header)"""
+    import requests
+    origin = "https://bhatshrinath.github.io"
+    for host in ("query1", "query2"):
+        url = "https://%s.finance.yahoo.com/v8/finance/chart/TCS.NS?range=1d&interval=1m" % host
+        try:
+            r = requests.get(url, headers={"Origin": origin, "User-Agent": "indian-stock-finder-diagnostic"}, timeout=20)
+            note("CORS probe %s: HTTP %s, allow-origin=%s, allow-credentials=%s, bytes=%d" % (
+                host, r.status_code, r.headers.get("access-control-allow-origin"),
+                r.headers.get("access-control-allow-credentials"), len(r.content)))
+        except Exception as exc:
+            note("CORS probe %s failed: %s" % (host, exc))
 
 
 if __name__ == "__main__":
