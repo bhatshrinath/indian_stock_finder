@@ -15,7 +15,7 @@
 </head>
 <body>
   <header class="topbar">
-    <button id="back" class="back" data-goto="more" hidden aria-label="Back">‹ Back</button>
+    <button id="back" class="back" data-back hidden aria-label="Back">‹ Back</button>
     <div class="brand">
       <img src="icon.svg" alt="" width="30" height="30">
       <span>Stock Finder</span>
@@ -25,35 +25,35 @@
   </header>
 
   <main id="app">
-    <!-- simple everyday screens -->
     <section id="tab-today" class="tab active"></section>
-    <section id="tab-mystocks" class="tab"></section>
+    <section id="tab-advanced" class="tab">
+      <div id="tab-champions"></div>
+      <h3 class="menu-group">Dig deeper (optional)</h3>
+      <details class="fold" id="f-crashes"><summary><span class="ic">💥</span><span><b>Crash by crash</b><small>Who fell least and who got back first</small></span></summary>
+        <div class="fold-body"><div id="tab-crashes"></div></div></details>
+      <details class="fold" id="f-ruletest"><summary><span class="ic">🧪</span><span><b>Does this idea work?</b><small>Picked with old prices, then held: tested honestly</small></span></summary>
+        <div class="fold-body"><div id="tab-ruletest"></div></div></details>
+      <details class="fold" id="f-live"><summary><span class="ic">📡</span><span><b>Live prices</b><small>Near-live quotes and risk for your stocks</small></span></summary>
+        <div class="fold-body"><div id="tab-live"></div></div></details>
+      <details class="fold" id="f-plan"><summary><span class="ic">📋</span><span><b>The app's own trades</b><small>The buy / sell / hold list it follows</small></span></summary>
+        <div class="fold-body"><div id="tab-plan"></div></div></details>
+      <details class="fold" id="f-market"><summary><span class="ic">🌐</span><span><b>Market today</b><small>Nifty, market health and headlines</small></span></summary>
+        <div class="fold-body"><div id="tab-market"></div><div id="tab-marketnews"></div></div></details>
+      <details class="fold" id="f-record"><summary><span class="ic">📊</span><span><b>Results so far</b><small>Every past idea and every test</small></span></summary>
+        <div class="fold-body"><div id="tab-record"></div></div></details>
+      <details class="fold" id="f-settings"><summary><span class="ic">⚙️</span><span><b>Settings &amp; help</b><small>Protect my money, alerts, how to use</small></span></summary>
+        <div class="fold-body"><div id="tab-settings"></div></div></details>
+    </section>
+    <!-- older detailed screens, reached only from links inside other screens -->
     <section id="tab-invest" class="tab"></section>
-    <section id="tab-more" class="tab"></section>
     <section id="tab-ideas" class="tab"></section>
-    <section id="tab-plan" class="tab"></section>
-    <section id="tab-live" class="tab"></section>
-    <section id="tab-advanced" class="tab"></section>
-    <section id="tab-marketnews" class="tab"></section>
-    <section id="tab-champions" class="tab"></section>
-    <section id="tab-crashes" class="tab"></section>
-    <section id="tab-checkstock" class="tab"></section>
-    <section id="tab-ruletest" class="tab"></section>
-    <!-- detailed screens (reached from "More") -->
-    <section id="tab-help" class="tab"></section>
-    <section id="tab-market" class="tab"></section>
     <section id="tab-swing" class="tab"></section>
     <section id="tab-longterm" class="tab"></section>
-    <section id="tab-record" class="tab"></section>
-    <section id="tab-news" class="tab"></section>
-    <section id="tab-settings" class="tab"></section>
   </main>
 
   <nav class="bottomnav" aria-label="Main">
-    <button data-tab="today" class="active"><span class="ic">💡</span>Suggestions</button>
-    <button data-tab="mystocks"><span class="ic">💼</span>My Stocks</button>
-    <button data-tab="news"><span class="ic">📰</span>News</button>
-    <button data-tab="more"><span class="ic">☰</span>More</button>
+    <button data-tab="today" class="active"><span class="ic">📋</span>My Plan</button>
+    <button data-tab="advanced"><span class="ic">🧰</span>Advanced</button>
   </nav>
 
   <dialog id="dlg"><div id="dlg-body"></div><form method="dialog"><button class="btn wide">Close</button></form></dialog>

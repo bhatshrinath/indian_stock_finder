@@ -551,3 +551,19 @@ def test_business_signs_unknown_never_counts_against():
     b = champions.business_signs({"debt_to_equity": 250, "roe": 25, "profit_margin": 12, "pe": 95})
     assert b["debt"] is False and b["profit"] is True and b["price"] is False
     assert champions.business_signs({"roe": 30, "profit_margin": -3})["profit"] is False
+
+
+def test_falling_little_counts_even_if_recovery_is_slow():
+    """A share that hardly falls in a crash holds up well, even if it takes a while to edge back."""
+    from engine import champions
+    dates, trend, dip, ix = _crash_market()
+    calm_dip = 1 - (1 - dip) * 0.25                     # falls a quarter as far as the market
+    for start in (252 * 3, 252 * 8):                     # ... then stays a little down for 2 years
+        calm_dip[start + 60:start + 60 + 504] = calm_dip[start + 60]
+    D = pd.DataFrame({"CALM": 100 * trend * calm_dip}, index=dates)
+    st = champions.study(D, ix, min_years=10, min_crashes=2)
+    r = st["rows"][0]
+    c = st["crashes"][0]
+    assert r["crashes"][0][1] > c["months"]                # slower to get back than the Nifty
+    assert r["crashes"][0][0] > 0.5 * c["fall"]           # but fell far less
+    assert r["signs"]["bounce"]

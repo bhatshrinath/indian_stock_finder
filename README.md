@@ -7,7 +7,7 @@ works on phone and laptop. You can install it on a phone's home screen like an a
 **Made for a very cautious, non-expert investor with a small amount (₹20,000 suggested).**
 Nothing to press: the **Today** screen and a phone message simply say what to do at the next market open:
 🔴 **SELL** · 🛒 **BUY** (how many shares, the most to pay, the most you could lose) · ✋ **HOLD**, or
-**"Nothing to do today"**, which is the most common answer. Three big buttons: **Today**, **Results**, **More**.
+**"Nothing to do today"**, which is the most common answer. Just two tabs: **My Plan** (sell / buy / my stocks, with news folded away) and **Advanced** (one page: long-term picks with search and filters on top; everything else folds out only if wanted).
 
 ### Safe mode (on by default)
 | Rule | Why |
@@ -52,7 +52,7 @@ The live track record on the Results screen will show real results as they come 
 | **Long-term portfolio** | 15 strong large/mid-cap stocks to hold, reviewed monthly, with quantities for your amount and a staged investing plan |
 | **Proof** | Backtests of every rule (after costs) **plus a live track record** of every idea the app has ever given, with real outcomes |
 | **News** | Latest headlines for each stock and the market, with automatic red-flag detection (SEBI action, fraud, pledges, defaults…) |
-| **Long-term champions** (More → Advanced) | Shares that rose in most years and got back to their old price fastest after every crash since 2008 (2008, 2011, 2016, COVID 2020, 2022…), with a crash recovery race, a report card for any Nifty 200 share, and an honest back-test: champions picked using only older prices, then held. Built weekly from ~19 years of prices (`engine/champions.py`) |
+| **Long-term picks** (Advanced) | Shares that rose in most years and held up in every crash since 2008 (fell much less than the Nifty, or got back to their old price sooner) (2008, 2011, 2016, COVID 2020, 2022…), with filters (champion / strong / risky, rising now) and sorting (fell least, back fastest, grew most), crash-by-crash bars, a report card for any Nifty 200 share, and an honest back-test: champions picked using only older prices, then held. Built weekly from ~19 years of prices (`engine/champions.py`) |
 | **Alerts** | In-app/browser alerts, plus optional free phone push (ntfy), Telegram or Gmail for stop-loss and target hits and new ideas |
 
 > ⚠️ **Honest expectations.** No system wins every time, and anyone promising that is not being truthful.
@@ -137,7 +137,7 @@ Free Yahoo prices are usually 1 to 3 minutes behind the exchange; always confirm
 
 ### Install on the phone
 Open the app link → **Android/Chrome:** ⋮ → *Add to Home screen*. **iPhone/Safari:** Share → *Add to Home Screen*.
-Then open **⚙ Settings** in the app and enter the capital and split (for example 70% long-term, 30% swing).
+Then set **Money I have today** at the top of **My Plan**. Other settings are under **Advanced → Settings & help**.
 These settings stay on that phone only.
 
 ---

@@ -2,7 +2,7 @@
 
 The idea (a common rule of thumb among long-term investors): the best shares to own for years
   1. go up in most years,
-  2. fall less than the market in a crash and get back to their old price sooner
+  2. hold up in crashes: fall much less than the market, or get back to their old price sooner
      (2008 world financial crash, 2011, 2015-16, COVID 2020, 2022, ...),
   3. grow faster than the Nifty over the long run,
   4. are steady: holding them for any 3 years almost always made money,
@@ -28,7 +28,7 @@ from . import config, data, fundamentals, news
 
 log = logging.getLogger(__name__)
 
-VERSION = 1
+VERSION = 2                    # bump when the study changes, so the weekly file is rebuilt at once
 FILE = "champions.json"
 REFRESH_DAYS = 6               # the study changes slowly: rebuilt about once a week
 CRASH_MIN_FALL = 0.15          # a "crash" = the Nifty fell at least 15% from its high
@@ -39,6 +39,7 @@ MONTH_DAYS = 30.44
 # the signs, as plain rules (the app shows them as ticks)
 UP_YEARS_MIN = 70              # rose in at least 7 of every 10 calendar years
 ROLL3_MIN = 85                 # any 3-year holding period made money at least 85% of the time
+FELL_LESS = 0.7                # "holds up in crashes": back sooner than the Nifty, OR fell at most 70% as far
 VOL_MAX = 35                   # yearly price swing (volatility) at most 35%
 DEBT_MAX = 100                 # debt/equity at most 1.0x (Yahoo reports it in %)
 ROE_MIN = 12                   # return on equity at least 12%
@@ -243,7 +244,7 @@ def study(D: pd.DataFrame, ix: pd.Series, min_years: float = MIN_YEARS,
 
         cr, logs, depth = [], [], []
         fin_lived = fin_rec = 0
-        s_months, n_months = [], []
+        s_months, n_months, s_falls, n_falls = [], [], [], []
         for c, eff in zip(crashes, effects):
             e = eff.get(s)
             cr.append(e)
@@ -251,14 +252,19 @@ def study(D: pd.DataFrame, ix: pd.Series, min_years: float = MIN_YEARS,
                 continue
             nm = c["months"] if c["months"] is not None else c["months_so_far"]
             logs.append(math.log((e["months"] + 1) / (nm + 1)))
-            depth.append(e["fall"] - c["fall"])
+            # how far it fell compared with the Nifty (falls in %, negative): 0.5 = fell half as far
+            depth.append(math.log((abs(e["fall"]) + 2) / (abs(c["fall"]) + 2)))
             if c["months"] is not None:                 # the market itself has recovered
                 fin_lived += 1
                 fin_rec += e["recovered"]
                 s_months.append(e["months"])
                 n_months.append(c["months"])
-        bounce_raw = (-float(np.mean(logs)) + float(np.mean(depth)) / 50) if logs else np.nan
-        fast = bool(fin_lived and fin_rec == fin_lived and np.median(s_months) <= np.median(n_months))
+                s_falls.append(abs(e["fall"]))
+                n_falls.append(abs(c["fall"]))
+        # falling less counts as much as getting back sooner
+        bounce_raw = (-float(np.mean(logs)) - float(np.mean(depth))) if logs else np.nan
+        fast = bool(fin_lived and fin_rec == fin_lived and (
+            np.median(s_months) <= np.median(n_months) or np.median(s_falls) <= FELL_LESS * np.median(n_falls)))
         signs = {
             "rises": bool(len(ys) >= 3 and up_pct >= UP_YEARS_MIN),
             "bounce": fast,
@@ -494,7 +500,7 @@ def build(p: data.Prices, uni: pd.DataFrame, n50: set[str], use_fundamentals: bo
     return {
         "generated": datetime.now(timezone.utc).isoformat(), "version": VERSION, "demo": p.source.startswith("DEMO"),
         "data_from": ix.index[0].strftime("%Y-%m-%d"), "data_to": ix.index[-1].strftime("%Y-%m-%d"),
-        "rules": {"up_years": UP_YEARS_MIN, "roll3": ROLL3_MIN, "vol": VOL_MAX, "debt": DEBT_MAX / 100,
+        "rules": {"up_years": UP_YEARS_MIN, "roll3": ROLL3_MIN, "fell_less": FELL_LESS, "vol": VOL_MAX, "debt": DEBT_MAX / 100,
                   "roe": ROE_MIN, "pe": PE_MAX, "min_years": MIN_YEARS, "min_crashes": MIN_CRASHES,
                   "crash_fall": int(CRASH_MIN_FALL * 100)},
         "crashes": crashes, "years": st["years"], "ytd_year": st["ytd_year"],
