@@ -24,6 +24,8 @@ jobs:
         run: python -m engine.research
       - name: End-to-end run on synthetic data
         run: python -m engine.run --mode full --demo --no-news
+      - name: Long-term champions study on synthetic data
+        run: python -m engine.run --mode champions --demo --no-news
       - uses: actions/setup-node@v4
         with:
           node-version: "20"

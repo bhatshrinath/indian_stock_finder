@@ -27,7 +27,7 @@ jobs:
     # (Settings -> Secrets and variables -> Actions -> Variables). Manual runs still work.
     if: github.event_name == 'workflow_dispatch' || vars.AUTO_RUN != 'off'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - name: Skip a backup slot when today's scan already ran
@@ -70,4 +70,19 @@ jobs:
           git add docs/data engine/nifty200_fallback.csv
           git diff --cached --quiet && exit 0
           git commit -m "data: daily scan $(date -u +%Y-%m-%d)"
+          for i in 1 2 3; do git pull --rebase -X theirs && git push && break; sleep 5; done
+      # Long-term champions (Advanced screen): ~19 years of prices, rebuilt about once a week.
+      # A separate step after the scan is published, so it can never delay or break the daily plan.
+      - name: Long-term champions study (weekly)
+        if: steps.check.outputs.done != 'true'
+        continue-on-error: true
+        timeout-minutes: 12
+        run: python -m engine.run --mode champions
+      - name: Publish champions
+        if: steps.check.outputs.done != 'true'
+        continue-on-error: true
+        run: |
+          git add docs/data/champions.json 2>/dev/null || exit 0
+          git diff --cached --quiet && exit 0
+          git commit -m "data: long-term champions $(date -u +%Y-%m-%d)"
           for i in 1 2 3; do git pull --rebase -X theirs && git push && break; sleep 5; done

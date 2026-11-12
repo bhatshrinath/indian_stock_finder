@@ -1268,6 +1268,10 @@ function renderMore() {
 
 function renderAdvanced() {
   const items = [
+    ["champions", "🏆", "Long-term champions", "Rise most years, bounce back fastest after crashes"],
+    ["crashes", "💥", "Crash recovery race", "Who got back first after 2008, COVID…"],
+    ["checkstock", "🔍", "Check any share", "A simple report card for any Nifty 200 share"],
+    ["ruletest", "🧪", "Does this idea work?", "Tested on past years, honestly"],
     ["live", "📡", "Live Intelligence", "Near-live quotes, risk and signal confirmation"],
     ["plan", "📋", "Daily plan", "Buy / sell / hold list followed by the app"],
     ["market", "🌐", "Market details", "Nifty chart and market health"],
@@ -1897,12 +1901,441 @@ function renderRecoNews() {
     ${blocks || `<div class="card empty">No suggestions or stocks yet, so no news.</div>`}`;
 }
 
+// ================================================================== LONG-TERM CHAMPIONS (Advanced)
+// Shares that rose in most years and got back to their old price fastest after every market crash
+// since 2007 (2008, 2011, 2016, COVID 2020, 2022, ...). Built about once a week by engine/champions.py
+// from ~19 years of real prices. Loaded only when one of these screens is opened.
+const CHAMP_TABS = ["champions", "crashes", "checkstock", "ruletest"];
+const CH = { crash: null, q: "" };
+const CHARTS = {};
+const FD_RATE = 0.07;                       // bank FD, for the "₹10,000 then and now" comparison
+
+async function loadChampions() {
+  if (S.champ === undefined) {
+    S.champ = null;                           // loading
+    renderChampionTabs();
+    try { S.champ = await getJSON("champions.json"); } catch { S.champ = false; }
+  }
+  renderChampionTabs();
+}
+
+function renderChampionTabs() {
+  renderChampions();
+  renderCrashRace();
+  renderCheckStock();
+  renderRuleTest();
+}
+
+function champGate(el) {
+  if (S.champ == null) { el.innerHTML = `<div class="card empty">Loading…</div>`; return false; }
+  if (!S.champ || !S.champ.stocks) {
+    el.innerHTML = `<div class="card empty"><p style="font-size:40px;margin:0">⏳</p><h2>Not ready yet</h2>
+      <p>This study reads about 19 years of prices. The evening scan builds it once a week. Please check again tomorrow.</p></div>`;
+    return false;
+  }
+  return true;
+}
+
+const champData = () => S.champ;
+const champBy = (sym) => (champData().stocks || []).find((s) => s.symbol === sym);
+const median = (a) => { const b = [...a].sort((x, y) => x - y); const m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+const mo = (m) => (m == null ? "–" : m < 1 ? "under 1 month" : m >= 24 ? `${(m / 12).toFixed(1)} years` : `${Math.round(m)} months`);
+const moShort = (m) => (m == null ? "–" : m >= 24 ? `${(m / 12).toFixed(1)} yr` : `${Math.round(m)} mo`);
+const shortInr = (v) => (v >= 1e7 ? `₹${+(v / 1e7).toFixed(1)} Cr` : v >= 1e5 ? `₹${+(v / 1e5).toFixed(1)} L` : v >= 1e3 ? `₹${Math.round(v / 1e3)}k` : `₹${Math.round(v)}`);
+const VERDICT = {
+  champion: ["🏆", "Champion", "b-high"], strong: ["👍", "Strong", "b-watch"],
+  average: ["😐", "Average", "b-low"], risky: ["⚠️", "Risky", "b-red"],
+};
+const verdictBadge = (v) => { const [ic, t, cls] = VERDICT[v] || VERDICT.average; return `<span class="badge ${cls}">${ic} ${t}</span>`; };
+const trendTag = (s) => (s.trend === "rising"
+  ? `<span class="trend rising">🟢 Rising now</span>` : `<span class="trend resting">🟡 Resting</span>`);
+
+function monthIndex(iso) {
+  const [y0, m0] = (champData().months0 || "2007-01").split("-").map(Number);
+  const [y, m] = String(iso).slice(0, 7).split("-").map(Number);
+  return (y - y0) * 12 + (m - m0);
+}
+const monthLabel = (i) => {
+  const [y0, m0] = (champData().months0 || "2007-01").split("-").map(Number);
+  const d = new Date(Date.UTC(y0, m0 - 1 + i, 1));
+  return d.toLocaleDateString("en-IN", { month: "short", year: "numeric", timeZone: "UTC" });
+};
+
+// typical months to get back to the pre-crash price, for the crashes the market has recovered from
+function bounceMedian(s) {
+  const ch = champData();
+  const pairs = ch.crashes.map((c, i) => [c, s.crashes[i]]).filter(([c, e]) => c.months != null && e)
+    .map(([c, e]) => [e[1], c.months]);
+  if (!pairs.length) return null;
+  return { s: median(pairs.map((p) => p[0])), n: median(pairs.map((p) => p[1])), k: pairs.length };
+}
+
+// ------------------------------------------------------------------ small visuals
+function scoreRing(score, size = 48) {
+  const r = 18, c = 2 * Math.PI * r, f = Math.max(0, Math.min(100, score || 0)) / 100;
+  return `<svg class="ring" width="${size}" height="${size}" viewBox="0 0 44 44" role="img" aria-label="Score ${score} out of 100">
+    <circle cx="22" cy="22" r="${r}" fill="none" stroke="var(--line)" stroke-width="5"/>
+    <circle cx="22" cy="22" r="${r}" fill="none" stroke="var(--brand)" stroke-width="5" stroke-linecap="round"
+      stroke-dasharray="${(c * f).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 22 22)"/>
+    <text x="22" y="26.5" text-anchor="middle" font-size="13" font-weight="800" fill="currentColor">${score ?? "–"}</text></svg>`;
+}
+
+// the share's monthly line and the Nifty's, both starting at ₹10,000 on the share's first month
+function lines(s) {
+  const ch = champData();
+  if (!s.series) return null;
+  const n = ch.nifty.series.slice(s.m0, s.m0 + s.series.length);
+  const n0 = n.find((v) => v != null);
+  if (!n0) return null;
+  return { a: s.series.map((v) => (v == null ? null : v * 100)), b: n.map((v) => (v == null ? null : (v / n0) * 10000)) };
+}
+
+function miniSpark(s) {
+  const d = lines(s);
+  if (!d) return "";
+  const w = 300, h = 40, all = [...d.a, ...d.b].filter((v) => v > 0);
+  const lo = Math.log(Math.min(...all)), hi = Math.log(Math.max(...all)), r = hi - lo || 1;
+  const pts = (arr) => arr.map((v, i) => (v > 0 ? `${((i / (arr.length - 1)) * w).toFixed(1)},${(h - 3 - ((Math.log(v) - lo) / r) * (h - 6)).toFixed(1)}` : null))
+    .filter(Boolean).join(" ");
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <polyline fill="none" stroke="var(--s2)" stroke-width="2" vector-effect="non-scaling-stroke" points="${pts(d.b)}"/>
+    <polyline fill="none" stroke="var(--s1)" stroke-width="2" vector-effect="non-scaling-stroke" points="${pts(d.a)}"/></svg>`;
+}
+
+const legendLine = (a = "This share", b = "Nifty 50") =>
+  `<div class="legend small"><span><i class="sw s1"></i>${esc(a)}</span><span><i class="sw s2"></i>${esc(b)}</span></div>`;
+
+// growth of ₹10,000 (log scale, so a fall of 50% looks the same in 2008 and in 2020), crash periods shaded
+function growthChart(s, id) {
+  const d = lines(s);
+  if (!d) return "";
+  const ch = champData();
+  const W = 360, H = 210, L = 44, R = 8, T = 16, B = 22, len = d.a.length;
+  const all = [...d.a, ...d.b].filter((v) => v > 0);
+  const lo = Math.log(Math.min(...all)), hi = Math.log(Math.max(...all)), rg = hi - lo || 1;
+  const x = (i) => L + (i / Math.max(1, len - 1)) * (W - L - R);
+  const y = (v) => T + ((hi - Math.log(v)) / rg) * (H - T - B);
+  const path = (arr) => arr.map((v, i) => (v > 0 ? `${x(i).toFixed(1)},${y(v).toFixed(1)}` : null)).filter(Boolean).join(" L");
+  const steps = [1e3, 2e3, 5e3, 1e4, 2e4, 5e4, 1e5, 2e5, 5e5, 1e6, 2e6, 5e6, 1e7, 2e7, 5e7];
+  let ticks = steps.filter((v) => Math.log(v) >= lo - 0.01 && Math.log(v) <= hi + 0.01);
+  while (ticks.length > 4) ticks = ticks.filter((_, i) => i % 2 === 0);
+  const grid = ticks.map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
+    <text x="${L - 4}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--muted)">${shortInr(v)}</text>`).join("");
+  const bands = ch.crashes.map((c) => {
+    const a = Math.max(0, monthIndex(c.peak) - s.m0);
+    const b = Math.min(len - 1, monthIndex(c.recovered || ch.data_to) - s.m0);
+    if (b <= 0 || a >= len - 1 || b <= a) return "";
+    return `<rect x="${x(a).toFixed(1)}" y="${T}" width="${(x(b) - x(a)).toFixed(1)}" height="${H - T - B}" fill="var(--band)"/>
+      <text x="${((x(a) + x(b)) / 2).toFixed(1)}" y="${T - 4}" text-anchor="middle" font-size="10" fill="var(--muted)">${esc(c.short)}</text>`;
+  }).join("");
+  const years = [0, Math.floor((len - 1) / 2), len - 1].map((i) => `<text x="${x(i).toFixed(1)}" y="${H - 6}" font-size="11" fill="var(--muted)"
+    text-anchor="${i === 0 ? "start" : i === len - 1 ? "end" : "middle"}">${monthLabel(s.m0 + i).slice(-4)}</text>`).join("");
+  CHARTS[id] = { ...d, W, L, R, len, x, y, m0: s.m0 };
+  return `<div class="chart-box"><svg class="gchart" data-chart="${id}" viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="Growth of ₹10,000 in ${esc(s.name)} compared with the Nifty 50">
+    ${bands}${grid}
+    <path d="M${path(d.b)}" fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M${path(d.a)}" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>
+    <line class="xh" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="var(--muted)" stroke-width="1" visibility="hidden"/>
+    <circle class="da" r="4" fill="var(--s1)" stroke="var(--card)" stroke-width="2" visibility="hidden"/>
+    <circle class="db" r="4" fill="var(--s2)" stroke="var(--card)" stroke-width="2" visibility="hidden"/>
+    ${years}
+    <rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent"/></svg>
+    <div class="tip" hidden></div></div>
+    ${legendLine()}<p class="small muted" style="margin:2px 0 0">Grey bands: market crashes (until the Nifty got back to its old high). Tap the chart for any month.</p>`;
+}
+
+function wireCharts(root = document) {
+  root.querySelectorAll("svg[data-chart]").forEach((svg) => {
+    const d = CHARTS[svg.dataset.chart];
+    if (!d || svg.dataset.wired) return;
+    svg.dataset.wired = "1";
+    const tip = svg.parentElement.querySelector(".tip");
+    const xh = svg.querySelector(".xh"), da = svg.querySelector(".da"), db = svg.querySelector(".db");
+    const show = (ev) => {
+      const box = svg.getBoundingClientRect();
+      const fx = ((ev.clientX - box.left) / box.width) * d.W;
+      const i = Math.max(0, Math.min(d.len - 1, Math.round(((fx - d.L) / (d.W - d.L - d.R)) * (d.len - 1))));
+      const a = d.a[i], b = d.b[i], px0 = d.x(i);
+      xh.setAttribute("x1", px0); xh.setAttribute("x2", px0); xh.setAttribute("visibility", "visible");
+      for (const [dot, v] of [[da, a], [db, b]]) {
+        if (v > 0) { dot.setAttribute("cx", px0); dot.setAttribute("cy", d.y(v)); dot.setAttribute("visibility", "visible"); }
+        else dot.setAttribute("visibility", "hidden");
+      }
+      tip.innerHTML = `<b>${esc(monthLabel(d.m0 + i))}</b><div><i class="sw s1"></i>This share ${a > 0 ? inr(a) : "–"}</div>
+        <div><i class="sw s2"></i>Nifty 50 ${b > 0 ? inr(b) : "–"}</div>`;
+      tip.hidden = false;
+      const left = (px0 / d.W) * 100;
+      tip.style.left = left > 55 ? "" : `calc(${left}% + 10px)`;
+      tip.style.right = left > 55 ? `calc(${100 - left}% + 10px)` : "";
+    };
+    const hide = () => { tip.hidden = true; [xh, da, db].forEach((n) => n.setAttribute("visibility", "hidden")); };
+    svg.addEventListener("pointermove", show);
+    svg.addEventListener("pointerdown", show);
+    svg.addEventListener("pointerleave", hide);
+  });
+}
+
+// horizontal bars with the label and the value written next to every bar (never colour alone)
+function moneyBars(rows) {
+  const max = Math.max(...rows.map((r) => r.value || 0), 1);
+  return `<div class="mbars">${rows.map((r) => `<div class="mbar"><span class="mbar-l">${r.label}</span>
+    <div class="mbar-track"><div class="mbar-fill ${r.cls}" style="width:${Math.max(1.5, ((r.value || 0) / max) * 100).toFixed(1)}%"></div></div>
+    <b>${r.text ?? inr(r.value)}</b></div>`).join("")}</div>`;
+}
+
+function yearTiles(s) {
+  const ch = champData();
+  const tiles = ch.years.map((y, i) => [y, s.yearly[i]]).filter(([, v]) => v != null);
+  if (s.ytd != null && ch.ytd_year) tiles.push([ch.ytd_year, s.ytd, true]);
+  return `<div class="ytiles">${tiles.map(([y, v, part]) => `<div class="ytile ${v >= 0 ? "t-up" : "t-down"}${part ? " part" : ""}"
+      title="${y}: ${v > 0 ? "+" : ""}${v}%"><span>${y}${part ? "*" : ""}</span><b>${v >= 0 ? "▲" : "▼"} ${Math.abs(v)}%</b></div>`).join("")}</div>
+    ${ch.ytd_year && s.ytd != null ? `<p class="small muted" style="margin:4px 0 0">* ${ch.ytd_year} so far.</p>` : ""}`;
+}
+
+function crashBars(s) {
+  const ch = champData();
+  const rows = ch.crashes.map((c, i) => ({ c, e: s.crashes[i] })).filter((r) => r.e);
+  if (!rows.length) return `<p class="small muted">This share was not listed during any big market fall.</p>`;
+  const nm = (c) => c.months ?? c.months_so_far;
+  const max = Math.max(1, ...rows.flatMap((r) => [r.e[1], nm(r.c)]));
+  const bar = (label, cls, m, back) => `<div class="mbar"><span class="mbar-l">${label}</span>
+    <div class="mbar-track"><div class="mbar-fill ${cls}" style="width:${Math.max(1.5, (m / max) * 100).toFixed(1)}%"></div></div>
+    <b>${back ? (m < 0.5 ? "no fall" : moShort(m)) : "not back yet"}</b></div>`;
+  return rows.map(({ c, e }) => `<div class="crow"><div><b>${esc(c.short)}</b> <span class="small muted">${esc(c.name)}</span></div>
+    <div class="mbars">${bar("This share", "s1", e[1], e[2])}${bar("Nifty 50", "s2", nm(c), c.months != null)}</div>
+    <div class="small muted">Fell ${pct(e[0], 0)} · Nifty fell ${pct(c.fall, 0)}</div></div>`).join("");
+}
+
+function signList(s) {
+  const b = s.business || {}, sg = s.signs || {}, f = s.fundamentals || {}, R = champData().rules || {};
+  const bm = bounceMedian(s);
+  return [
+    ["📈", "Rises most years", sg.rises, `Up in ${s.up_years} of ${s.n_years} years`],
+    ["⚡", "Bounces back fast", sg.bounce, bm ? `Back in ${mo(bm.s)} after a crash (Nifty ${mo(bm.n)})` : "No finished crash in its history"],
+    ["🥇", "Beats the Nifty", sg.beats, `${pct(s.cagr, 0)} a year (Nifty ${pct(s.nifty_cagr, 0)})`],
+    ["🛡", "Steady", sg.steady, `Held any 3 years: made money ${s.roll3 ?? "–"}% of the time`],
+    ["🏦", "Little debt", b.debt, f.debt_to_equity != null ? `Debt is ${num(f.debt_to_equity / 100, 2)}× its own money (limit ${R.debt ?? 1}×)` : "Not known (normal for banks)"],
+    ["💵", "Real profits", b.profit, f.roe != null ? `Earns ${num(f.roe, 0)}% a year on its own money` : "Not known"],
+    ["🏷", "Fair price", b.price, f.pe != null ? `P/E ${num(f.pe, 0)}${b.price === false ? ": pricey, buy in small parts" : ""}` : "Not known"],
+  ];
+}
+
+function signGrid(s) {
+  return `<div class="signs">${signList(s).map(([ic, t, ok, d]) => {
+    const k = ok === true ? "pass" : ok === false ? "fail" : "unk";
+    return `<div class="sign ${k}"><span class="sign-mark" aria-label="${k === "pass" ? "yes" : k === "fail" ? "no" : "not known"}">${k === "pass" ? "✓" : k === "fail" ? "✗" : "?"}</span>
+      <div><b>${ic} ${t}</b><small>${esc(d)}</small></div></div>`;
+  }).join("")}</div>`;
+}
+
+// ------------------------------------------------------------------ the report card (any share)
+function openChampion(sym) {
+  const s = champBy(sym);
+  if (!s) return;
+  const ch = champData();
+  const d = lines(s);
+  const yrs = (new Date(ch.data_to) - new Date(s.first)) / (365.25 * 864e5);
+  const nowShare = d ? d.a[d.a.length - 1] : null, nowNifty = d ? d.b[d.b.length - 1] : null;
+  const fd = 10000 * Math.pow(1 + FD_RATE, yrs);
+  const startYear = new Date(s.first).getFullYear();
+  const f = s.fundamentals || {};
+  const q = livePrice(s.symbol);
+  $("#dlg-body").innerHTML = `<div class="rc-head">${scoreRing(s.score, 56)}
+      <div><h3>${esc(s.name)}</h3><div class="muted small">${esc(s.symbol)} · ${esc(s.industry)} · ${esc(s.size)}</div>
+      <div class="badges">${verdictBadge(s.verdict)} ${trendTag(s)}</div></div></div>
+    ${(s.red_flags || []).length ? `<div class="callout bad small">⚠ News warning: ${s.red_flags.map(esc).join(", ")}</div>` : ""}
+    ${nowShare ? `<h4>💰 ₹10,000 put in ${startYear}, today</h4>${moneyBars([
+      { label: "This share", value: nowShare, cls: "s1" }, { label: "Nifty 50", value: nowNifty, cls: "s2" },
+      { label: "Bank FD 7%", value: fd, cls: "s0" }])}` : ""}
+    ${growthChart(s, "g-" + s.symbol)}
+    <h4>📅 Every year</h4>${yearTiles(s)}
+    <h4>⚡ After each crash: time to get back to the old price</h4>
+    <p class="small muted" style="margin:0 0 6px">Shorter bar = bounced back faster.</p>${crashBars(s)}
+    <h4>✅ The 7 signs of a lasting winner</h4>${signGrid(s)}
+    <h4>📍 Today</h4>
+    <div class="kv">
+      <div><span>Price</span><b>${px(q ? q.price : s.price)}</b></div>
+      <div><span>From its 1-year high</span><b class="${tone(s.from_high)}">${pct(s.from_high, 0)}</b></div>
+      <div><span>Worst fall ever</span><b class="down">${pct(s.max_dd, 0)}</b></div>
+      <div><span>Dividend</span><b>${s.business?.dividend ? "Pays" : "–"}</b></div>
+    </div>
+    ${s.trend === "rising" ? "" : `<div class="callout warn small">🟡 Resting: the price is below its 200-day average. Wait until it is rising again before buying.</div>`}
+    ${(s.news || []).length ? `<h4>📰 News</h4><ul class="news">${s.news.map(newsItem).join("")}</ul>` : ""}
+    <p class="small muted">Past results are not a promise. ${f.market_cap ? `Company size: ${shortInr(f.market_cap * 1e7)}.` : ""}</p>`;
+  $("#dlg").showModal();
+  wireCharts($("#dlg-body"));
+}
+
+// ------------------------------------------------------------------ screen: long-term champions
+function marketBanner() {
+  const r = S.latest?.market?.regime;
+  if (r === 0) return `<div class="callout bad">🔴 <b>The whole market is falling now.</b> Even champions fall in a crash. Wait until it turns 🟢 before buying.</div>`;
+  if (r === 1) return `<div class="callout warn small">🟡 Market is unsure. If you buy, buy in small parts.</div>`;
+  return "";
+}
+
+function champCard(s) {
+  const bm = bounceMedian(s);
+  return `<button class="champ" data-champ="${esc(s.symbol)}" aria-label="Report card for ${esc(s.name)}">
+    ${scoreRing(s.score)}
+    <div class="champ-main"><div class="row"><b>${esc(s.name)}</b>${trendTag(s)}</div>
+      <div class="muted small">${esc(s.industry)} · ${esc(s.size)}</div>
+      <div class="facts"><span>📈 Up ${s.up_years} of ${s.n_years} yrs</span>
+        <span>⚡ Back in ${bm ? moShort(bm.s) : "–"}${bm ? ` <i class="muted">(Nifty ${moShort(bm.n)})</i>` : ""}</span>
+        <span>🥇 ${pct(s.cagr, 0)}/yr</span></div>
+      ${miniSpark(s)}</div><span class="chev">›</span></button>`;
+}
+
+function starterSet(champs) {
+  const used = new Set(), out = [];
+  for (const s of champs) {
+    if (s.trend !== "rising" || used.has(s.industry)) continue;
+    used.add(s.industry);
+    out.push(s);
+    if (out.length === 3) break;
+  }
+  return out;
+}
+
+function renderChampions() {
+  const el = $("#tab-champions");
+  if (!el || !champGate(el)) return;
+  const ch = champData();
+  S.champRegime = S.latest?.market?.regime;
+  const champs = ch.stocks.filter((s) => s.champion);
+  const starter = starterSet(champs);
+  const n = ch.nifty || {};
+  const crashNames = ch.crashes.map((c) => c.short).join(", ");
+  el.innerHTML = `<h2>🏆 Long-term champions</h2>
+    ${ch.demo ? `<div class="callout bad small"><b>Demo data</b>: synthetic numbers for testing.</div>` : ""}
+    ${marketBanner()}
+    <div class="card"><p style="margin:0 0 8px">Shares that <b>rise year after year</b> and <b>bounce back fastest</b> after every crash since ${esc((ch.data_from || "").slice(0, 4))} (${esc(crashNames)}).</p>
+      <div class="pillset"><span>📈 Rises most years</span><span>⚡ Bounces back fast</span><span>🥇 Beats the Nifty</span><span>🛡 Steady</span><span>🏦 Little debt</span><span>💵 Real profits</span></div>
+      <div class="summary" style="margin-top:10px"><div><b>${champs.length}</b><span>champions</span></div>
+        <div><b>${ch.stocks.length}</b><span>shares checked</span></div><div><b>${ch.crashes.length}</b><span>crashes studied</span></div></div></div>
+    ${starter.length ? `<h2>⭐ A simple starter set</h2>
+      <div class="card plan-card">${starter.map((s, i) => `<button class="lt-row starter" data-champ="${esc(s.symbol)}"><span class="num-badge">${i + 1}</span>
+        <div class="lt-name"><b>${esc(s.name)}</b><div class="muted small">${esc(s.industry)}</div></div>
+        <div class="lt-qty"><b>${px(s.price)}</b><div class="muted small">per share</div></div><span class="chev">›</span></button>`).join("")}
+        <div class="line"><span class="ic">🧺</span><div>3 champions from <b>3 different industries</b>, all rising now.</div></div>
+        <div class="line"><span class="ic">🪜</span><div>Same amount in each. Buy in <b>3 parts</b>, one part a month.</div></div>
+        <div class="line"><span class="ic">⏳</span><div>Hold for years. Sell if it falls <b>25% below its highest price</b> or leaves this list.</div></div></div>` : ""}
+    <h2>All champions</h2>${legendLine("Share", "Nifty 50")}
+    ${champs.length ? champs.map(champCard).join("") : `<div class="card empty">No share passes every check right now.</div>`}
+    <div class="card small"><details><summary>How is this worked out?</summary>
+      <ul class="rules small">
+        <li>💥 <b>Crash</b> = the Nifty fell ${ch.rules?.crash_fall ?? 15}% or more. Found: ${esc(ch.crashes.map((c) => c.name).join(" · "))}.</li>
+        <li>⚡ <b>Bounce back</b> = months from the market's top until the share was back at its price on that day.</li>
+        <li>🏆 <b>Champion</b> = at least ${ch.rules?.min_years ?? 10} years of history, came through ${ch.rules?.min_crashes ?? 2}+ crashes, all 6 signs, no bad news.</li>
+        <li>🎯 <b>Score</b> = 30% rising years, 30% crash bounce-back, 25% growth, 15% calmness.</li>
+        <li>⚖ Nifty itself: up ${n.up_years ?? "–"} of ${n.n_years ?? "–"} years, ${pct(n.cagr, 0)} a year.</li>
+        <li>🔎 Only today's Nifty 200 companies are checked, so failures that left the list are missing. The past looks a bit better than it was. See <b>Does this idea work?</b></li>
+      </ul></details>
+      <p class="muted" style="margin:8px 0 0">Prices ${esc(fmtDate(ch.data_from))} to ${esc(fmtDate(ch.data_to))}. Updated weekly. Past results are not a promise.</p></div>
+    <div class="btns two"><button class="btn" data-goto="crashes">💥 Crash race</button><button class="btn" data-goto="ruletest">🧪 Does it work?</button></div>`;
+}
+
+// ------------------------------------------------------------------ screen: crash recovery race
+function renderCrashRace() {
+  const el = $("#tab-crashes");
+  if (!el || !champGate(el)) return;
+  const ch = champData();
+  const list = ch.crashes.map((c, i) => ({ ...c, i }));
+  if (!list.length) { el.innerHTML = `<div class="card empty">No big market fall in the data.</div>`; return; }
+  if (CH.crash == null || !list[CH.crash])
+    CH.crash = (list.find((c) => /covid/i.test(c.name)) || [...list].reverse().find((c) => c.months != null) || list[list.length - 1]).i;
+  const c = list[CH.crash];
+  const nm = c.months ?? c.months_so_far;
+  const lived = ch.stocks.filter((s) => s.crashes[c.i]).map((s) => ({ s, e: s.crashes[c.i] }));
+  const back = lived.filter((x) => x.e[2]);
+  const faster = back.filter((x) => x.e[1] < nm).length;
+  const notBack = lived.length - back.length;
+  const top = [...back].sort((a, b) => a.e[1] - b.e[1] || b.e[0] - a.e[0]).slice(0, 12);
+  const max = Math.max(nm, ...top.map((x) => x.e[1]), 1);
+  const w = (m) => Math.max(1.5, (m / max) * 100).toFixed(1);
+  const mark = `<i class="nref" style="left:${w(nm)}%"></i>`;
+  const row = (label, cls, m, text, sym) => `<${sym ? `button data-champ="${esc(sym)}"` : "div"} class="mbar race">
+    <span class="mbar-l">${label}</span><div class="mbar-track">${mark}<div class="mbar-fill ${cls}" style="width:${w(m)}%"></div></div>
+    <b>${text}</b></${sym ? "button" : "div"}>`;
+  el.innerHTML = `<h2>💥 Crash recovery race</h2>
+    <div class="pill-row">${list.map((x) => `<button class="${x.i === c.i ? "on" : ""}" data-crash="${x.i}">${esc(x.short)}</button>`).join("")}</div>
+    <div class="card"><div class="status-head">${esc(c.name)}</div>
+      <p style="margin:4px 0 10px">The Nifty fell <b class="down">${pct(c.fall, 0)}</b> from ${esc(fmtDate(c.peak))} and ${c.months != null
+        ? `took <b>${mo(c.months)}</b> to get back.` : `is <b>not back yet</b> (${mo(c.months_so_far)} so far).`}</p>
+      <div class="summary"><div><b class="up">${faster}</b><span>back sooner than Nifty</span></div>
+        <div><b>${back.length - faster}</b><span>took longer</span></div><div><b class="down">${notBack}</b><span>still not back</span></div></div></div>
+    <h2>🏁 Fastest to bounce back</h2>
+    <div class="card"><div class="mbars">
+      ${row("<b>Nifty 50</b>", "s2", nm, c.months != null ? moShort(nm) : "not back")}
+      ${top.map((x) => row(`${x.s.champion ? "🏆 " : ""}${esc(x.s.symbol)}`, "s1", x.e[1], x.e[1] < 0.5 ? "no fall" : moShort(x.e[1]), x.s.symbol)).join("")}
+    </div><p class="small muted" style="margin:8px 0 0">Orange line = the Nifty's time. 🏆 = today's champion. Tap a share for its report card.</p></div>`;
+}
+
+// ------------------------------------------------------------------ screen: check any share
+function checkStockList() {
+  const ch = champData();
+  const q = CH.q.trim().toLowerCase();
+  const hits = ch.stocks.filter((s) => !q || s.symbol.toLowerCase().includes(q) || (s.name || "").toLowerCase().includes(q)).slice(0, 40);
+  return hits.length ? hits.map((s) => `<button class="menu-item cs-row" data-champ="${esc(s.symbol)}">
+      <span class="ic">${(VERDICT[s.verdict] || VERDICT.average)[0]}</span>
+      <span><b>${esc(s.name)}</b><small>${esc(s.symbol)} · score ${s.score} · ${(VERDICT[s.verdict] || VERDICT.average)[1]}</small></span><span class="chev">›</span></button>`).join("")
+    : `<div class="card empty">No share found. Only Nifty 200 shares are checked.</div>`;
+}
+
+function renderCheckStock() {
+  const el = $("#tab-checkstock");
+  if (!el || !champGate(el)) return;
+  const counts = {};
+  for (const s of champData().stocks) counts[s.verdict] = (counts[s.verdict] || 0) + 1;
+  el.innerHTML = `<h2>🔍 Check any share</h2>
+    <label class="field">Type a company name<input id="cs-q" type="search" autocomplete="off" placeholder="e.g. Infosys, HDFC, Titan" value="${esc(CH.q)}"></label>
+    <div class="pillset">${Object.entries(VERDICT).map(([k, [ic, t]]) => `<span>${ic} ${t}: ${counts[k] || 0}</span>`).join("")}</div>
+    <div class="menu" id="cs-list">${checkStockList()}</div>`;
+  $("#cs-q").oninput = (e) => { CH.q = e.target.value; $("#cs-list").innerHTML = checkStockList(); };
+}
+
+// ------------------------------------------------------------------ screen: does the idea work?
+function renderRuleTest() {
+  const el = $("#tab-ruletest");
+  if (!el || !champGate(el)) return;
+  const T = (champData().test || []).filter((t) => t.champ?.x && t.nifty?.x);
+  if (!T.length) { el.innerHTML = `<h2>🧪 Does this idea work?</h2><div class="card empty">Not enough history for the test yet.</div>`; return; }
+  const beatN = T.filter((t) => t.champ.cagr > t.nifty.cagr).length;
+  const beatA = T.filter((t) => t.all?.cagr != null && t.champ.cagr > t.all.cagr).length;
+  const nc = T.filter((t) => t.next_crash && t.next_crash.champ_months != null);
+  const fasterN = nc.filter((t) => t.next_crash.champ_months <= t.next_crash.nifty_months).length;
+  const good = beatN >= Math.ceil(T.length * 0.7) && beatA >= Math.ceil(T.length / 2);
+  el.innerHTML = `<h2>🧪 Does this idea work?</h2>
+    <p class="small muted" style="margin-top:0">We went back in time: picked ${T[0].picks.length} champions using <b>only the prices known then</b>, bought them, and held.</p>
+    <div class="summary"><div><b>${beatN}/${T.length}</b><span>beat the Nifty</span></div>
+      <div><b>${beatA}/${T.length}</b><span>beat all shares</span></div>
+      <div><b>${nc.length ? `${fasterN}/${nc.length}` : "–"}</b><span>bounced back faster next crash</span></div></div>
+    <div class="callout ${good ? "good" : "warn"}">${good
+      ? "✅ <b>The idea held up.</b> Champions picked in the past mostly did better than the market afterwards."
+      : "🟡 <b>Mixed results.</b> Champions did not beat the market every time. Spread your money and be patient."}</div>
+    ${legendLine("🏆 Champions", "Nifty 50")}
+    ${T.map((t) => {
+      const n = t.next_crash;
+      return `<div class="card"><div class="row"><b>Bought in Jan ${t.start}</b><span class="muted small">held ${num(t.years, 1)} years</span></div>
+        <div class="small muted" style="margin:2px 0 6px">₹10,000 became:</div>
+        ${moneyBars([{ label: "Champions", value: 10000 * t.champ.x, cls: "s1" },
+          ...(t.all?.x ? [{ label: "All shares", value: 10000 * t.all.x, cls: "s3" }] : []),
+          { label: "Nifty 50", value: 10000 * t.nifty.x, cls: "s2" }])}
+        <div class="small" style="margin-top:6px">📉 Worst dip on the way: champions <b class="down">${pct(t.champ.worst, 0)}</b>, Nifty <b class="down">${pct(t.nifty.worst, 0)}</b></div>
+        ${n && n.champ_months != null ? `<div class="small">⚡ Next crash (${esc(n.short)}): champions back in <b>${moShort(n.champ_months)}</b>, Nifty <b>${n.nifty_recovered ? moShort(n.nifty_months) : "not back yet"}</b></div>` : ""}
+        <details class="small"><summary>Which shares?</summary>${t.picks.map(esc).join(", ")}${t.n_champions < t.picks.length ? ` <span class="muted">(only ${t.n_champions} passed every check then; the rest were the next best)</span>` : ""}</details></div>`;
+    }).join("")}
+    <div class="card small muted">"All shares" = the same amount in every share of today's Nifty 200 list. It has the same small bias as the champions (companies that failed are missing), so it is the fair comparison. Before charges and tax.</div>`;
+}
+
 // ------------------------------------------------------------------ wiring
 const MAIN_TABS = ["today", "mystocks", "news", "more"];
 const TITLES = { help: "How to use", record: "Is it working?", swing: "All stock ideas", longterm: "Long-term details",
   market: "Market details", news: "Market news", settings: "Settings", mystocks: "My Stocks",
   invest: "Long-term investing", ideas: "All buy ideas", plan: "Daily plan", marketnews: "Market news",
-  live: "Live Intelligence", advanced: "Advanced" };
+  live: "Live Intelligence", advanced: "Advanced", champions: "Long-term champions", crashes: "Crash recovery race",
+  checkstock: "Check any share", ruletest: "Does this idea work?" };
 
 function renderAll() {
   renderStatus();
@@ -1922,6 +2355,8 @@ function renderAll() {
   renderRecoNews();
   if (!$("#tab-settings").classList.contains("active")) renderSettings();
   $("#disclaimer").textContent = S.latest?.disclaimer || "";
+  // champions screen: only redrawn when the market mood changes (keeps open sections open)
+  if (S.champ && S.champRegime !== S.latest?.market?.regime) renderChampions();
 }
 
 function showTab(name) {
@@ -1937,6 +2372,7 @@ function showTab(name) {
   store.set(LS.tab, name);
   if (name === "record") loadResults();
   if (name === "settings") renderSettings();
+  if (CHAMP_TABS.includes(name)) loadChampions();
   window.scrollTo({ top: 0 });
 }
 
@@ -1947,8 +2383,10 @@ function findPick(sym, strat) {
 }
 
 document.addEventListener("click", (e) => {
-  const t = e.target.closest("[data-tab],[data-goto],[data-filter],[data-buy],[data-sell],[data-ltinfo],[data-sold],[data-preset],[data-detail],[data-money],[data-mark],[data-refresh-live]");
+  const t = e.target.closest("[data-tab],[data-goto],[data-filter],[data-buy],[data-sell],[data-ltinfo],[data-sold],[data-preset],[data-detail],[data-money],[data-mark],[data-refresh-live],[data-champ],[data-crash]");
   if (!t) return;
+  if (t.dataset.champ) { openChampion(t.dataset.champ); return; }
+  if (t.dataset.crash) { CH.crash = +t.dataset.crash; renderCrashRace(); return; }
   if (t.hasAttribute("data-refresh-live")) { refreshLive(); return; }
   if (t.dataset.preset) { saveCapital(+t.dataset.preset); return; }
   if (t.dataset.money) { saveMoney(+t.dataset.money); return; }

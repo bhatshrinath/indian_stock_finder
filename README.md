@@ -52,6 +52,7 @@ The live track record on the Results screen will show real results as they come 
 | **Long-term portfolio** | 15 strong large/mid-cap stocks to hold, reviewed monthly, with quantities for your amount and a staged investing plan |
 | **Proof** | Backtests of every rule (after costs) **plus a live track record** of every idea the app has ever given, with real outcomes |
 | **News** | Latest headlines for each stock and the market, with automatic red-flag detection (SEBI action, fraud, pledges, defaults…) |
+| **Long-term champions** (More → Advanced) | Shares that rose in most years and got back to their old price fastest after every crash since 2008 (2008, 2011, 2016, COVID 2020, 2022…), with a crash recovery race, a report card for any Nifty 200 share, and an honest back-test: champions picked using only older prices, then held. Built weekly from ~19 years of prices (`engine/champions.py`) |
 | **Alerts** | In-app/browser alerts, plus optional free phone push (ntfy), Telegram or Gmail for stop-loss and target hits and new ideas |
 
 > ⚠️ **Honest expectations.** No system wins every time, and anyone promising that is not being truthful.

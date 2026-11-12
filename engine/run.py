@@ -4,6 +4,7 @@
     python -m engine.run --mode live     # during market hours: live prices + stop/target alerts
     python -m engine.run --mode morning  # 8:45 AM IST: pre-market reminder of today's buys
     python -m engine.run --mode full --demo   # offline test with synthetic data
+    python -m engine.run --mode champions     # long-term champions study (weekly; --champions forces it)
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-from . import ai_notes, backtest, config, data, fundamentals, live_analysis, news, notify, tracker
+from . import ai_notes, backtest, champions, config, data, fundamentals, live_analysis, news, notify, tracker
 from .strategies import SWING_STRATEGIES, Features, momentum_scores, pick_portfolio
 from .universe import load_nifty50, load_universe, nifty50_cached
 
@@ -661,6 +662,20 @@ def run_full(args) -> None:
              time.time() - t0, len(actionable), len(lt_picks), len(events), len(new_trades))
 
 
+def update_champions(args, uni, force: bool = False) -> None:
+    """Long-term champions (Advanced screen): ~19 years of prices, rebuilt about once a week.
+    Its own step in the Daily scan workflow (after the scan is published), so it never delays or breaks it."""
+    if not (force or getattr(args, "champions", False)) and champions.is_fresh():
+        log.info("champions.json is fresh, not rebuilt")
+        return
+    t0 = time.time()
+    try:
+        champions.publish(uni, load_nifty50(), demo=args.demo, use_news=not args.no_news)
+    except Exception as exc:
+        log.warning("champions study failed: %s", exc)
+    log.info("champions study took %.0fs", time.time() - t0)
+
+
 def market_is_open() -> bool:
     n = data.now_ist()
     if n.weekday() >= 5:
@@ -776,7 +791,8 @@ def run_test() -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["full", "live", "morning", "test"], default="full")
+    ap.add_argument("--mode", choices=["full", "live", "morning", "test", "champions"], default="full")
+    ap.add_argument("--champions", action="store_true", help="rebuild the long-term champions study now")
     ap.add_argument("--demo", action="store_true", help="synthetic data (offline testing)")
     ap.add_argument("--no-news", action="store_true")
     ap.add_argument("--no-backtest", action="store_true")
@@ -794,6 +810,8 @@ def main(argv=None) -> int:
         run_morning(args)
     elif args.mode == "test":
         return run_test()
+    elif args.mode == "champions":
+        update_champions(args, load_universe(), force=args.champions)
     else:
         run_live(args)
     return 0

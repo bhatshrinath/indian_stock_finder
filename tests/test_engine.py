@@ -479,3 +479,75 @@ def test_dispatch_calls_the_github_api(monkeypatch):
     assert live_session.dispatch("daily.yml")
     assert sent["url"].endswith("/repos/o/r/actions/workflows/daily.yml/dispatches")
     assert sent["headers"]["Authorization"] == "Bearer x" and sent["json"]["ref"]
+
+
+# ---------------------------------------------------------------- long-term champions
+def _crash_market(years=12, seed=5):
+    """Daily prices with two market crashes: a 30% fall in year 3 and a 25% fall in year 8."""
+    from engine import champions  # noqa: F401
+    dates = pd.bdate_range("2008-01-01", periods=252 * years)
+    t = np.arange(len(dates))
+    trend = np.exp(0.10 * t / 252)
+    dip = np.ones(len(dates))
+    for start, depth in ((252 * 3, 0.30), (252 * 8, 0.25)):
+        n = 120                                          # 60 days down, 60 days back up
+        shape = np.concatenate([np.linspace(0, 1, n // 2), np.linspace(1, 0, n // 2)])
+        dip[start:start + n] *= 1 - depth * shape
+    ix = pd.Series(10000 * trend * dip, index=dates)
+    return dates, trend, dip, ix
+
+
+def test_find_crashes_and_recovery_months():
+    from engine import champions
+    _, _, _, ix = _crash_market()
+    cr = champions.find_crashes(ix)
+    assert len(cr) == 2
+    assert all(c["fall"] <= -15 for c in cr)
+    assert all(c["recovered"] is not None and c["months"] > c["months_down"] for c in cr)
+
+
+def test_fast_bouncer_beats_slow_one():
+    from engine import champions
+    dates, trend, dip, ix = _crash_market()
+    rng = np.random.default_rng(3)
+    noise = lambda: np.exp(np.cumsum(rng.normal(0, 0.004, len(dates))))
+    # FAST: shallower dips, grows faster. SLOW: falls the same, then stays down for 3 years.
+    slow_dip = dip.copy()
+    for start in (252 * 3, 252 * 8):
+        slow_dip[start + 60:start + 60 + 756] = slow_dip[start + 60]
+    D = pd.DataFrame({"FAST": 100 * np.exp(0.18 * np.arange(len(dates)) / 252) * (1 - (1 - dip) / 2) * noise(),
+                      "SLOW": 100 * trend * slow_dip * noise()}, index=dates)
+    st = champions.study(D, ix, min_years=10, min_crashes=2)
+    rows = {r["symbol"]: r for r in st["rows"]}
+    fast, slow = rows["FAST"], rows["SLOW"]
+    assert fast["signs"]["bounce"] and fast["signs"]["beats"] and fast["price_champion"]
+    assert not slow["signs"]["bounce"] and not slow["price_champion"]
+    assert fast["score"] > slow["score"]
+    # FAST falls about half as far as the market and gets back sooner
+    assert fast["crashes"][0][0] > st["crashes"][0]["fall"]
+    assert fast["crashes"][0][1] <= st["crashes"][0]["months"]
+
+
+def test_champion_rule_test_never_peeks_at_the_future():
+    """Picks for a start year must not change when prices after that year change."""
+    from engine import champions
+    dates, trend, dip, ix = _crash_market(years=14)
+    rng = np.random.default_rng(7)
+    D = pd.DataFrame({f"S{i}": 100 * trend ** rng.uniform(0.5, 1.8) * dip ** rng.uniform(0.3, 1.5)
+                      * np.exp(np.cumsum(rng.normal(0, 0.01, len(dates)))) for i in range(25)}, index=dates)
+    inds = {c: f"ind{i % 6}" for i, c in enumerate(D.columns)}
+    crashes = champions.find_crashes(ix)
+    effects = [champions.crash_effects(D, c) for c in crashes]
+    a = champions.rule_test(D, ix, inds, crashes, effects, starts=(2016,), top=5)
+    D2 = D.copy()
+    D2.loc["2016-01-01":] = D2.loc["2016-01-01":].to_numpy()[:, ::-1]   # scramble the future
+    b = champions.rule_test(D2, ix, inds, crashes, effects, starts=(2016,), top=5)
+    assert a and b and a[0]["picks"] == b[0]["picks"]
+
+
+def test_business_signs_unknown_never_counts_against():
+    from engine import champions
+    assert champions.business_signs({}) == {"debt": None, "profit": None, "price": None, "dividend": None}
+    b = champions.business_signs({"debt_to_equity": 250, "roe": 25, "profit_margin": 12, "pe": 95})
+    assert b["debt"] is False and b["profit"] is True and b["price"] is False
+    assert champions.business_signs({"roe": 30, "profit_margin": -3})["profit"] is False
