@@ -193,7 +193,7 @@ def long_term_picks(f: Features, uni: pd.DataFrame, prev_holdings: list[str],
     for rank, s in enumerate(chosen, 1):
         row = sc.loc[s]
         pts, warn = fundamentals.quality_check(funda.get(s, {}))
-        price = float(f.close[s].iloc[-1])
+        price = float(f.close[s].dropna().iloc[-1])           # the latest day can be missing for one share
         picks.append({
             "symbol": s, "name": names.get(s, s), "industry": inds.get(s, ""), "kind": "long_term",
             "large": bool(f.large.get(s, False)),            # Nifty 50 blue chip
@@ -254,10 +254,11 @@ def long_term_buy_list(f: Features, uni: pd.DataFrame, order: list[str], use_fun
     out = []
     for rank, s in enumerate(cands, 1):
         pts, warn = fundamentals.quality_check(funda.get(s, {}))
-        if warn or inds.get(s, "Other") in seen_ind:      # diversity: one company per industry
-            continue
+        closes = f.close[s].dropna()                      # Yahoo sometimes misses a share's latest day
+        if warn or inds.get(s, "Other") in seen_ind or closes.empty or not closes.iloc[-1] > 0:
+            continue                                      # (diversity: one company per industry)
         seen_ind.add(inds.get(s, "Other"))
-        price = float(f.close[s].iloc[-1])
+        price = float(closes.iloc[-1])
         out.append({"symbol": s, "name": names.get(s, s), "industry": inds.get(s, ""), "kind": "long_term",
                     "large": True, "price": r2(price), "rank": rank, "trend": trend_facts(f, s),
                     # wide safety price against a one-company disaster (tight ones sold winners on ordinary dips)
@@ -291,6 +292,7 @@ def lt_signals(f: Features, guard: dict, review_day: str | None, keep: list[str]
     longterm.save_log(log_)
     idx = next((x for x in funds if x["symbol"] == "NIFTYBEES"), None)
     plan_buy = [] if guard["out"] else ([idx] if idx else []) + buy[:config.LT_PICKS]
+    plan_buy = [x for x in plan_buy if (x.get("price") or 0) > 0]          # never "pay up to ₹0"
     return {"guard": guard, "guard_turned_down": bool(guard["out"] and guard["changed"]),
             "guard_turned_up": bool(not guard["out"] and guard["changed"]),
             # the review covers the shares the method ranks (Nifty 50); other holdings keep only their safety price

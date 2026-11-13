@@ -1545,7 +1545,8 @@ function basket() {
   const adds = large.filter((x) => held.get(x.industry) === x.symbol).map((x) => ({ ...x, _add: true }));
   order.push(idx, ...fresh, ...adds);
   const seenInd = new Set();
-  const cand = order.filter(Boolean).filter((x) => {
+  // a share without a valid price (a data gap) is never suggested: it would mean "buy ∞ shares at ₹0"
+  const cand = order.filter((x) => x && ((x.max_entry || x.price) > 0)).filter((x) => {
     const ind = x.industry || x.symbol;
     if (seenInd.has(ind)) return false;
     seenInd.add(ind);
@@ -1634,7 +1635,7 @@ function protectedSuggestions() {
   const chosen = [];
   for (const p of lt) {
     if (chosen.length >= nLong) break;
-    if (p.price * 1.02 > per || usedInd.has(p.industry || p.symbol)) continue;
+    if (!(p.price > 0) || p.price * 1.02 > per || usedInd.has(p.industry || p.symbol)) continue;
     usedInd.add(p.industry || p.symbol);
     chosen.push(p);
   }

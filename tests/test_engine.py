@@ -779,3 +779,21 @@ def test_if_you_own_it_sells_follow_the_app_rules(monkeypatch, tmp_path):
     s3 = lt_signals(f, {"out": True, "changed": True}, d[390], keep=[], buy=buy,
                     funds=[{"symbol": "NIFTYBEES", "price": 280.0}], prev={"lt_signals": s}, last_date=d[-1])
     assert s3["buy"] == [] and s3["guard_turned_down"] and not any("monthly" in x["why"] for x in s3["sell"])
+
+
+def test_a_missing_latest_day_never_means_a_zero_price(monkeypatch, tmp_path):
+    """Yahoo sometimes misses one share's latest day: the buy list uses its last real close, never ₹0."""
+    from engine.run import long_term_buy_list, lt_signals
+    monkeypatch.setattr(config, "OUT_DIR", tmp_path)
+    p = random_walk_prices(seed=4, days=400)
+    sym = SYMS[2]
+    for frame in (p.close, p.open, p.high, p.low):
+        frame.loc[frame.index[-1], sym] = np.nan
+    f = Features(p)
+    uni = pd.DataFrame({"symbol": SYMS, "name": SYMS, "industry": [f"I{i}" for i in range(len(SYMS))]})
+    buy = long_term_buy_list(f, uni, [sym, SYMS[3]], use_fundamentals=False)
+    got = {x["symbol"]: x["price"] for x in buy}
+    assert got[sym] == pytest.approx(float(p.close[sym].dropna().iloc[-1]), abs=0.01) and got[sym] > 0
+    s = lt_signals(f, {"out": False, "changed": False}, None, [], buy + [{"symbol": "ZERO", "price": None}],
+                   [{"symbol": "NIFTYBEES", "price": 280.0}], None, str(f.close.index[-1].date()))
+    assert all(b["max_entry"] > 0 for b in s["buy"]) and "ZERO" not in [b["symbol"] for b in s["buy"]]

@@ -98,7 +98,7 @@ def evening(latest: dict, prev: dict | None, results: list[str], short_plan: str
         lines.append(short_plan)
     if results:
         lines.append("\n".join(results))
-    buys = lt.get("buy", []) if not g.get("out") else []
+    buys = [b for b in lt.get("buy", []) if (b.get("max_entry") or 0) > 0] if not g.get("out") else []
     if buys:
         lines.append("🛒 To buy with new money (hold for a year or more):")
         lines += [f"• {short_name(b)} up to {inr(b.get('max_entry'))}" for b in buys[:4]]
