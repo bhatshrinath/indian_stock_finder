@@ -110,7 +110,8 @@ def load_long(symbols: list[str]) -> tuple[data.Prices, pd.Series] | None:
 @dataclass(frozen=True)
 class Variant:
     name: str
-    universe: str = "n50"           # "n50" (today's Nifty 50) or "n200"
+    universe: str = "n50"           # "n50" (today's Nifty 50), "n200", or "top50"/"top100": the most traded shares
+                                    # at that time (no hindsight about which companies later became big)
     rank: str = "mom"               # "mom" (6/12-month strength) or "quality" (champion score)
     filt: str = "none"              # "quality": only champion-like shares may be bought
     trend: bool = False             # buy only while the share's 200-day average is rising
@@ -119,8 +120,9 @@ class Variant:
     hold_rule: str = "rank"         # "rank" or "quality" (keep while the champion score stays in the top half)
     hold_q: float = 0.5
     index_w: float = 1 / 3          # part kept in a Nifty 50 index fund
-    guard: str = "g1"               # "none"; "g1" Nifty below its 200-day average; "g2" 3% below, back above it;
-                                    # "g3" below it while the average itself falls
+    guard: str = "g1"               # "none"; "g1" Nifty below its 200-day average; "g2" 3% below, back above it
+                                    # ("g2:0.05" = 5% below); "g3" below it while the average itself falls;
+                                    # "gm" checked only at month ends
     trail: float | None = 0.25      # rising safety price (fraction below the highest close since buying)
     tax: bool = False
 
@@ -152,6 +154,9 @@ class Ctx:
         self.m12 = f(Cf.shift(21) / Cf.shift(252) - 1)
         self.m6 = f(Cf.shift(21) / Cf.shift(126) - 1)
         self.recent = f(mask.astype(float).rolling(20, min_periods=1).sum()) >= 15
+        turnover = (Cf * p.volume.reindex_like(C).fillna(0)).rolling(126, min_periods=60).mean()
+        trank = turnover.where(turnover > 0).rank(axis=1, ascending=False)
+        self.top = {50: f(trank) <= 50, 100: f(trank) <= 100}
         ix = p.index_close.reindex(C.index)
         self.ix = f(ix.ffill())
         io = ixo.reindex(C.index) if ixo is not None else ix
@@ -163,7 +168,7 @@ class Ctx:
         d = self.dates
         self.is_me = np.array([i < self.T - 1 and d[i].month != d[i + 1].month for i in range(self.T)])
         self._quality(Cf)
-        self.guard = {g: self._guard(g) for g in ("g1", "g2", "g3")}
+        self.guard: dict[str, np.ndarray] = {}
         self._qcache: dict = {}
 
     # ---------------------------------------------------------------- monthly quality facts
@@ -207,7 +212,7 @@ class Ctx:
         m = int(self.qrow[i])
         if m < 0:
             return None
-        key = (m, universe is self.n50)
+        key = (m, universe.tobytes())
         if key in self._qcache:
             return self._qcache[key]
         q = {k: v[m] for k, v in self.q.items()}
@@ -239,25 +244,43 @@ class Ctx:
         return pd.DataFrame(rows, index=self.dates, columns=self.syms)
 
     # ---------------------------------------------------------------- market guard (True = stay out)
+    def guard_out(self, kind: str) -> np.ndarray:
+        if kind not in self.guard:
+            self.guard[kind] = self._guard(kind)
+        return self.guard[kind]
+
     def _guard(self, kind: str) -> np.ndarray:
         out = np.zeros(self.T, bool)
+        if kind == "none":
+            return out
+        name, _, band = kind.partition(":")
+        band = float(band) if band else 0.03
         state = False
         for i in range(self.T):
             x, s, sp = self.ix[i], self.ixs200[i], self.ixs200_prev[i]
             if not (np.isfinite(x) and np.isfinite(s)):
                 continue
-            if kind == "g1":
+            if name == "g1":
                 state = x < s
-            elif kind == "g2":
-                state = (x < s) if state else (x < 0.97 * s)
-            elif kind == "g3":
+            elif name == "g2":
+                state = (x < s) if state else (x < (1 - band) * s)
+            elif name == "g3":
                 state = (x < s) if state else (x < s and np.isfinite(sp) and s < sp)
+            elif name == "gm" and self.is_me[i]:
+                state = x < s
             out[i] = state
         return out
 
     # ---------------------------------------------------------------- what to buy / keep on day i
+    def universe(self, v: Variant, i: int) -> np.ndarray:
+        if v.universe == "n50":
+            return self.n50
+        if v.universe.startswith("top"):
+            return self.top[int(v.universe[3:])][i]
+        return self.all
+
     def candidates(self, v: Variant, i: int):
-        uni = self.n50 if v.universe == "n50" else self.all
+        uni = self.universe(v, i)
         c = self.Cf[i]
         with np.errstate(invalid="ignore"):
             base = uni & self.recent[i] & np.isfinite(c) & (c > 0)
@@ -312,7 +335,7 @@ def simulate(ctx: Ctx, v: Variant):
     the day; the list is reviewed at each month end; the guard is checked every day. Returns the value of
     1 rupee, the closed holdings (days held, gain, cost, why) and the tax paid."""
     T, dates = ctx.T, ctx.dates
-    out = ctx.guard[v.guard] if v.guard != "none" else np.zeros(T, bool)
+    out = ctx.guard_out(v.guard)
     cash, iu, ib, ie = 1.0, 0.0, 0.0, ctx.start          # cash, index-fund units, its cost and buy day
     pos: dict[int, list] = {}                              # share -> [units, cost, buy day, highest close, last price]
     in_mkt, orders = False, None
@@ -466,27 +489,36 @@ def note(title: str, rows: list[str]) -> None:
 
 
 # ======================================================================= the studies
+C_ = dict(guard="g2")                                       # round 2: the current method with the slower guard
 LT_VARIANTS = [
     Variant("A NOW N50 momentum, 3 + 1/3 index, guard, 25% stop"),
     Variant("B NOW without guard", guard="none"),
-    Variant("C NOW slower guard (3% band)", guard="g2"),
-    Variant("D NOW guard only when the 200d avg falls", guard="g3"),
-    Variant("E Quality momentum N200", universe="n200", filt="quality"),
-    Variant("F Quality momentum N200, no guard", universe="n200", filt="quality", guard="none"),
-    Variant("G Champions in uptrend N200", universe="n200", rank="quality", trend=True, hold_rule="quality"),
-    Variant("H Champions in uptrend, no guard", universe="n200", rank="quality", trend=True, hold_rule="quality", guard="none"),
-    Variant("I Champions in uptrend, slower guard", universe="n200", rank="quality", trend=True, hold_rule="quality", guard="g2"),
-    Variant("J Champions in uptrend, no stop", universe="n200", rank="quality", trend=True, hold_rule="quality", trail=None),
-    Variant("K Champions in uptrend, 5 shares", universe="n200", rank="quality", trend=True, hold_rule="quality", n=5),
-    Variant("L Champions in uptrend, no index part", universe="n200", rank="quality", trend=True, hold_rule="quality", index_w=0.0),
-    Variant("M Champions in uptrend, Nifty 50 only", universe="n50", rank="quality", trend=True, hold_rule="quality"),
-    Variant("N Champions, monthly top-6 swap", universe="n200", rank="quality", trend=True, hold_rule="rank"),
-    Variant("O Champions, no trend check, no guard", universe="n200", rank="quality", hold_rule="quality", guard="none"),
-    Variant("P Champions in uptrend, no guard, no stop", universe="n200", rank="quality", trend=True, hold_rule="quality",
-            guard="none", trail=None),
+    Variant("C NOW slower guard (out 3% below, back above)", **C_),
+    # how sensitive is the slower guard to its settings?
+    Variant("C2 guard band 2%", guard="g2:0.02"),
+    Variant("C5 guard band 5%", guard="g2:0.05"),
+    Variant("CM guard checked at month ends only", guard="gm"),
+    # no hindsight: the 50 most traded shares at that time instead of today's Nifty 50
+    Variant("T1 Top-50 traded momentum, guard", universe="top50"),
+    Variant("T2 Top-50 traded momentum, slower guard", universe="top50", **C_),
+    Variant("T3 Top-50 traded momentum, no guard", universe="top50", guard="none"),
+    Variant("T4 Top-100 traded momentum, slower guard", universe="top100", **C_),
+    Variant("T5 Top-100 traded, quality filter, slower guard", universe="top100", filt="quality", **C_),
+    # fewer swaps (less tax), stop width, index part, number of shares
+    Variant("H3 C, keep while in top 9", hold_mult=3.0, **C_),
+    Variant("H4 C, keep while in top 12", hold_mult=4.0, **C_),
+    Variant("S20 C, 20% stop", trail=0.20, **C_),
+    Variant("S00 C, no stop", trail=None, **C_),
+    Variant("X50 C, 1/2 in the index fund", index_w=0.5, **C_),
+    Variant("X0 C, no index fund", index_w=0.0, **C_),
+    Variant("N5 C, 5 shares", n=5, **C_),
+    Variant("Q50 C, Nifty 50 with quality filter", filt="quality", **C_),
+    Variant("H Champions in uptrend N200, no guard", universe="n200", rank="quality", trend=True, hold_rule="quality", guard="none"),
 ]
 BENCH = [Variant("Z1 Nifty 50 index fund, held", n=0, index_w=1.0, guard="none", trail=None),
-         Variant("Z2 Index fund + guard", n=0, index_w=1.0, guard="g1", trail=None)]
+         Variant("Z2 Index fund + guard", n=0, index_w=1.0, guard="g1", trail=None),
+         Variant("Z3 Index fund + slower guard", n=0, index_w=1.0, guard="g2", trail=None),
+         Variant("Z4 Index fund + month-end guard", n=0, index_w=1.0, guard="gm", trail=None)]
 
 
 def long_term(ctx: Ctx) -> list[list[str]]:
@@ -498,23 +530,23 @@ def long_term(ctx: Ctx) -> list[list[str]]:
         log.info("%s: %.1fs", v.name, time.time() - t0)
     head = [f"LONG TERM, real prices {ctx.dates[ctx.start].date()}..{ctx.dates[-1].date()}, {ctx.K} shares "
             f"(N50 {int(ctx.n50.sum())}); costs {COST * 200:.1f}% a round trip, cash {CASH_YIELD:.0%}/yr, Nifty + {IDX_DIV:.1%} dividends"]
-    rows1 = head + [line(n, s) for n, (v, s) in res.items() if n[0] in "ZABCD"]
-    rows2 = [line(n, s) for n, (v, s) in res.items() if n[0] in "EFGHIJ"]
-    rows2b = [line(n, s) for n, (v, s) in res.items() if n[0] in "KLMNOP"]
-    # after a rough tax estimate, for the main methods
+    group = lambda *keys: [line(n, s) for n, (v, s) in res.items() if n.split(" ")[0] in keys]
+    rows1 = head + group("Z1", "Z2", "Z3", "Z4", "A", "B", "C")
+    rows2 = group("C2", "C5", "CM", "T1", "T2", "T3", "T4", "T5")
+    rows2b = group("H3", "H4", "S20", "S00", "X50", "X0", "N5", "Q50", "H")
     rows3 = ["AFTER TAX (20% on gains from anything sold within a year; long-term gains assumed under the tax-free limit)"]
-    for key in ("A", "B", "E", "F", "G", "H", "I", "M", "O", "P"):
-        v = next((v for n, (v, s) in res.items() if n.startswith(key + " ")), None)
+    for key in ("Z1", "Z3", "A", "B", "C", "CM", "T2", "T3", "H3", "H4", "X50", "H"):
+        v = next((v for n, (v, s) in res.items() if n.split(" ")[0] == key), None)
         if v is None:
             continue
         eq, closed, paid = simulate(ctx, replace(v, tax=True))
-        s = summary(ctx, eq, closed)
-        rows3.append(f"{v.name[:44]} | before {pct(res[v.name][1]['cagr'], 1)}/yr, after tax {pct(s['cagr'], 1)}/yr | "
+        s = summary(ctx, eq, closed if v.n else None)
+        rows3.append(f"{v.name[:46]} | before {pct(res[v.name][1]['cagr'], 1)}/yr, after tax {pct(s['cagr'], 1)}/yr | "
                      f"worst fall {pct(s['maxdd'])}")
-    # calendar years, to see consistency
     rows4 = ["YEARS (% return): " + " ".join(str(y)[2:] for y in sorted(res[LT_VARIANTS[0].name][1]["yearly"]))]
     for n, (v, s) in res.items():
-        rows4.append(f"{n[:2].strip()}: " + " ".join(f"{100 * r:+.0f}" for _, r in sorted(s["yearly"].items())))
+        if n.split(" ")[0] in ("Z1", "Z3", "A", "B", "C", "CM", "T1", "T2", "T3", "T4", "H3", "X50", "H"):
+            rows4.append(f"{n.split(' ')[0]}: " + " ".join(f"{100 * r:+.0f}" for _, r in sorted(s["yearly"].items())))
     return [rows1, rows2, rows2b, rows3, rows4]
 
 
@@ -578,9 +610,13 @@ def main(argv=None) -> int:
     log.info("data: %d days x %d shares, %s..%s (%.0fs)", len(p.close), p.close.shape[1],
              p.close.index[0].date(), p.close.index[-1].date(), time.time() - t0)
     ctx = Ctx(p, ixo, uni, n50)
-    for k, rows in enumerate(long_term(ctx)):
-        note(f"long-term-{k + 1}", rows)
-    note("short-term", short_term(ctx, n50))
+    for title, fn in (("long-term", lambda: long_term(ctx)), ("short-term", lambda: [short_term(ctx, n50)])):
+        try:
+            for k, rows in enumerate(fn()):
+                note(f"{title}-{k + 1}", rows)
+        except Exception:
+            import traceback
+            note(f"{title}-failed", traceback.format_exc()[-1500:].splitlines())
     log.info("study done in %.0fs", time.time() - t0)
     return 0
 

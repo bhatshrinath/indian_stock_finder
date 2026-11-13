@@ -373,18 +373,50 @@ def test_holding_outcomes_and_trade_percentiles_are_ordered():
     assert res["p25_return"] <= res["p75_return"] and res["days_median"] <= res["days_p90"]
 
 
-def test_alert_carries_app_link(monkeypatch):
-    from engine import notify
-    sent = {}
+class _Resp:
+    def __init__(self, status=200, text="{}"):
+        self.status_code, self.text = status, text
+
+
+def _alert_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "OUT_DIR", tmp_path)
     monkeypatch.setattr(config, "NTFY_TOPIC", "sf-test-topic")
     monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "")
     monkeypatch.setattr(config, "SMTP_USER", "")
     monkeypatch.setattr(config, "APP_URL", "https://example.github.io/indian_stock_finder/")
-    monkeypatch.setattr(notify.requests, "post", lambda url, data=None, headers=None, timeout=None, **k: sent.update(url=url, headers=headers))
-    notify.send("Title", "Body", "high")
-    assert sent["url"].endswith("/sf-test-topic")
-    assert sent["headers"]["Click"] == "https://example.github.io/indian_stock_finder/"
-    assert "Open app" in sent["headers"]["Actions"] and sent["headers"]["Priority"] == "high"
+
+
+def test_alert_carries_app_link(monkeypatch, tmp_path):
+    from engine import notify
+    _alert_env(monkeypatch, tmp_path)
+    sent = {}
+    monkeypatch.setattr(notify.requests, "post", lambda url, json=None, timeout=None, **k: sent.update(url=url, json=json) or _Resp())
+    res = notify.send("Plan for Fri 13 Nov ₹", "Body ₹ 🛒", "high")
+    assert res == [{"channel": "ntfy", "ok": True, "status": 200}]
+    assert sent["url"] == config.NTFY_SERVER and sent["json"]["topic"] == "sf-test-topic"
+    assert sent["json"]["click"] == "https://example.github.io/indian_stock_finder/"
+    assert sent["json"]["actions"][0]["label"] == "Open app" and sent["json"]["priority"] == 4
+    assert sent["json"]["title"] == "Plan for Fri 13 Nov ₹"          # non-ASCII titles travel safely as JSON
+    log = notify.load()
+    assert log["last"]["ok"] and log["last_ok"] and log["log"][0]["title"].startswith("Plan for")
+
+
+def test_failed_alert_is_retried_and_recorded(monkeypatch, tmp_path):
+    from engine import notify
+    _alert_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(notify.time, "sleep", lambda s: None)
+    calls = []
+    monkeypatch.setattr(notify.requests, "post", lambda url, json=None, timeout=None, **k: calls.append(1) or _Resp(429, "limit reached"))
+    res = notify.send("T", "B")
+    assert len(calls) == 3 and not res[0]["ok"] and res[0]["status"] == 429
+    d = notify.load()
+    assert not d["last"]["ok"] and "429" in d["last_error"]["error"] and "last_ok" not in d
+    calls.clear()
+    monkeypatch.setattr(notify.requests, "post", lambda url, json=None, timeout=None, **k: calls.append(1) or _Resp(400, "bad"))
+    notify.send("T", "B")
+    assert len(calls) == 1                                       # a real error is not retried
+    notify.set_state(digest_for="2026-11-13")
+    assert notify.state()["digest_for"] == "2026-11-13" and len(notify.load()["log"]) == 2
 
 
 def test_live_session_phases():
