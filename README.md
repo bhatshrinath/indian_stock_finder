@@ -5,42 +5,50 @@ A free, self-updating stock research app for NSE (Indian) stocks, built for a re
 works on phone and laptop. You can install it on a phone's home screen like an app.
 
 **Made for a very cautious, non-expert investor with a small amount (₹20,000 suggested).**
-Nothing to press: the **Today** screen and a phone message simply say what to do at the next market open:
+Nothing to press: **My Plan** and a phone message every weekday evening simply say what to do at the next market open:
 🔴 **SELL** · 🛒 **BUY** (how many shares, the most to pay, the most you could lose) · ✋ **HOLD**, or
 **"Nothing to do today"**, which is the most common answer. Just two tabs: **My Plan** (sell / buy / my stocks, with news folded away) and **Advanced** (one page: long-term picks with search and filters on top; everything else folds out only if wanted).
+
+### The long-term plan (what My Plan suggests), tested on 18 years of real prices
+| Rule | Why |
+|---|---|
+| About **a third in a Nifty 50 index fund** (NIFTYBEES), the rest in the **3 strongest Nifty 50 companies** by 6 and 12-month price strength, **one per industry**, each with a profitable, low-debt business and no bad news | Spread over many companies and industries |
+| A share is **kept while it ranks among the 9 strongest** at each month-end review, and sold if it falls **25% below its best price** since buying | Fewer needless swaps: less tax and smaller falls than swapping at the top 6 |
+| **Market guard:** everything (index fund included, gold excepted) is sold only when the Nifty **closes 3% below its 200-day average**, and bought again once it **closes back above** the average | Selling at the first close below the average (the old rule) sold low and bought back higher again and again |
+| Money for today is spread **over industries you don't own yet** first | A portfolio that grows over many weeks stays spread out |
+
+18 years (July 2008 to Nov 2026), only the prices known at each moment, after charges (`engine/study.py`, rebuilt weekly into the Results screen):
+
+| | Per year | After tax | Worst fall | Years up |
+|---|---|---|---|---|
+| **My Plan's method** | **21.8%** | **18.3%** | **−21%** | 14 of 18 |
+| Old rules (sell at the first close below the 200-day average) | 17.8% | 13.8% | −40% | 11 of 18 |
+| Index fund + the same guard | 11.1% | 11.0% | −16% | 14 of 18 |
+| Nifty 50 index fund, just held | 12.1% | 12.1% | −45% | 15 of 18 |
+| My Plan's method on the 50 most traded shares at the time (no hindsight) | 13.1% | 10.3% | −36% | 14 of 18 |
+
+Honest reading: the main test uses today's Nifty 50, companies that had already proved themselves, and companies that
+collapsed are missing. Without that hindsight the shares added much less, so **most of the safety comes from the index
+fund and the market guard**. "After tax" assumes 20% on gains from anything sold within a year, and that a small
+investor's long-term gains stay under the yearly tax-free limit.
 
 ### Safe mode (on by default)
 | Rule | Why |
 |---|---|
-| Only **Nifty 50** companies (India's 50 largest), calmer than average, in rising long-term trends | No small or risky stocks |
-| Only **one method**: buying a short dip in such a company, and **only while the whole market is rising** | On 5 years of real data: made money in **66%** of 476 trades, gains 1.5× losses, still profitable over the last 12 months |
-| A **safety gate**: the method is used only while its own 5-year record shows ≥40 trades, ≥60% winners, gains ≥1.2× losses, and no loss over the last 12 months | If it stops working, the app pauses buying by itself |
-| **One trade at a time** with the whole amount, whole shares only, the strongest qualifying stock first, no stock with bad news | On real data, 1 × ₹20,000 earned about 7× more than 2 × ₹10,000 (fixed broker charges hurt small trades), with a smaller worst dip |
-| Every trade has a **safety sell price**, with a phone alert the moment it's reached, even on the day of buying | Losses stay small |
+| Only **Nifty 50** companies (India's 50 largest) | No small or risky stocks |
+| **Short trades are switched off.** The one short method (buying a 2-3 day dip in a calm Nifty 50 company while the market rises) looked fine on 5 years, but over **18 years it lost money after charges**: profit factor 0.99 over 1,187 trades; ₹20,000 used one trade at a time lost about ₹18,000, while a liquid fund would have earned about ₹38,000 | A method must hold up over many years, not just a lucky stretch |
+| A **safety gate**: a short method is used only while its 5-year record shows ≥40 trades, ≥60% winners, gains ≥1.2× losses, no loss over the last 12 months, **and** it made money over the 18-year test | If it stops working, the app pauses it by itself |
+| **One trade at a time** with the whole amount, whole shares only, no stock with bad news | Fixed broker charges hurt small trades |
+| Every holding has a **sell rule**, with a phone message when it's reached | Losses stay small |
 
-Typical trade: bought at 9:15 AM, sold within about 5 days. No method is ever 100% sure. Expect some losing trades;
-the edge comes from many small, controlled trades. To switch safe mode off (all ideas), add the repository variable `SAFE_MODE` = `off`.
+To switch safe mode off (all ideas), add the repository variable `SAFE_MODE` = `off`.
 The share counts in phone messages use `TRADE_AMOUNT` (default ₹20,000; set the repository variable to his real amount).
 
 ### What every suggestion shows
 Stock, how many shares, the most to pay, the sell-if-it-falls price, **how long to hold**, and **what to expect**: a bad case, a typical case
 and a good case in rupees (with the sell price), taken from similar past cases after charges, plus exact steps to place the order
-(NSE, Delivery, Limit order, then a stop-loss/GTT sell order). Long-term holdings also get a safety price that **rises as the price rises**
-(25% below the highest price since buying; 10% for the index fund), so gains are protected. A tighter 12% rule was tested on real data and rejected: it sold winners on ordinary dips (typical result +0.6% against +4.8% for the 25% rule, with no better worst case). Suggestions are valid for 3 trading days and are re-checked every weekday evening.
-
-### Honest expectations with ₹20,000 (5 years of real prices, after all charges)
-| | |
-|---|---|
-| Trades | about 20 a year (one at a time, usually sold within ~5 days) |
-| Made money | about 65 out of 100 trades |
-| Total profit | about **₹3,800 in 5 years** (≈ ₹760 a year, ≈ 3.5% a year); one year was +₹4,300, two years were slightly negative |
-| Worst dip along the way | about ₹2,000 (≈ 10%); the Nifty itself fell more |
-| Money actually in a trade | only ~30% of the time |
-
-That is **low risk but modest profit**, less than a fixed deposit on its own. Keeping the idle money in a liquid fund or liquid ETF
-(for example LIQUIDBEES) and moving it only on buy days raised the total to about **7% a year** in the same test, at the cost of a few extra orders.
-Below about ₹15,000 the fixed broker charges take most of the profit (₹10,000 split into two trades lost money in the test), and the app warns about it.
-The live track record on the Results screen will show real results as they come in.
+(NSE, Delivery, Limit order, then a stop-loss/GTT sell order). Shares also get a safety price that **rises as the price rises**
+(25% below the highest price since buying), so gains are protected; the index fund has none and is sold only by the market guard. A tighter 12% rule was tested on real data and rejected: it sold winners on ordinary dips (typical result +0.6% against +4.8% for the 25% rule, with no better worst case). Suggestions are valid for 3 trading days and are re-checked every weekday evening.
 
 **What it gives you every day**
 
@@ -53,7 +61,7 @@ The live track record on the Results screen will show real results as they come 
 | **Proof** | Backtests of every rule (after costs) **plus a live track record** of every idea the app has ever given, with real outcomes |
 | **News** | Latest headlines for each stock and the market, with automatic red-flag detection (SEBI action, fraud, pledges, defaults…) |
 | **Long-term picks** (Advanced) | Shares that rose in most years and held up in every crash since 2008 (fell much less than the Nifty, or got back to their old price sooner) (2008, 2011, 2016, COVID 2020, 2022…), with filters (champion / strong / risky, rising now) and sorting (fell least, back fastest, grew most), crash-by-crash bars, a report card for any Nifty 200 share, and an honest back-test: champions picked using only older prices, then held. Built weekly from ~19 years of prices (`engine/champions.py`) |
-| **Alerts** | In-app/browser alerts, plus optional free phone push (ntfy), Telegram or Gmail for stop-loss and target hits and new ideas |
+| **Alerts** | Every weekday at about 4:30 PM the plan for the next day (also on quiet days: "nothing to sell ✅"), an 8:45 AM reminder when something must be bought or sold at the opening, and SELL NOW during market hours. Free phone push (ntfy), Telegram or Gmail. Settings shows when the last alert was delivered |
 
 > ⚠️ **Honest expectations.** No system wins every time, and anyone promising that is not being truthful.
 > The goal here is a *positive edge after costs*: winners that are bigger or more frequent than losers,
@@ -77,6 +85,8 @@ over-fitted systems tend to look great in backtests and then fail with real mone
    NSE's [2026 whitepaper](https://www.niftyindices.com/docs/default-source/indices/nifty200-momentum-30/momentum-strategy-whitepaper_2026.pdf)
    reports 19.2% a year for that index since 2005, against 15.1% for the Nifty 200, with deeper falls in crashes.
    On top of that idea this app adds an uptrend filter, a debt and loss filter, a cap of 4 stocks per industry, and monthly reviews with a buffer that reduces churn.
+   **My Plan uses a careful version** (Nifty 50 only, 3 shares one per industry next to an index fund, kept while in the top 9,
+   a 25% rising safety price, and the 3% market guard), chosen on 18 years of prices in `engine/study.py`: see the table at the top.
 4. **Scoring.** Each signal gets a 0-100 score from its setup's backtested win rate and average gain, relative strength, volume,
    NSE delivery % (when available), news sentiment, company quality and market regime. Only High/Medium scores without red flags become **BUY**.
 5. **Self-policing.** If a setup's own backtest is not profitable after costs (profit factor below 1.1), it is automatically switched to "watch only".
@@ -153,6 +163,19 @@ Add any of these in **Settings → Secrets and variables → Actions → New rep
 | **Gmail** | `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `ALERT_EMAIL_TO` | Turn on 2-step verification in Google, create an **App password**, and use it here (never your real password). |
 | **WhatsApp** | – | Not built in: WhatsApp's official API needs a Meta Business account. Telegram or ntfy give the same result for free. |
 
+**What arrives, and when** (`engine/alerts.py`):
+
+| When | Message |
+|---|---|
+| Every weekday, about 4:30 PM (after the evening scan) | The plan for the next trading day: what to sell first ("if you own X, sell at 9:15 AM", with the reason), the market in one line, and what to buy with new money. On quiet days: "Plan for Mon 16 Nov: nothing to sell ✅", so silence always means something is wrong. Repository variable `DAILY_DIGEST` = `off` keeps quiet days quiet |
+| 8:45 AM | A reminder, only when something must be sold or bought at the opening |
+| Market hours | SELL NOW when a short trade falls to its safety price |
+
+The phone list of shares stays on the phone, so long-term sell messages name the shares the app suggested ("if you own
+TECHM: …"); the app shows the exact status for your own shares. Every message and the alert service's answer are saved
+in `docs/data/alerts.json`, and **Advanced → Settings & help** shows when the last one was delivered (or why it failed).
+Before 13 Nov 2026 messages came only for short trades, and none was allowed after 8 Nov, so the phone stayed silent.
+
 ### AI research notes (optional, the only paid feature)
 Each daily scan can ask Claude to write a short, plain-English note for each recommended stock and for the market.
 The notes only summarise the technicals, backtest numbers and headlines the engine already found; they invent nothing.
@@ -212,10 +235,14 @@ engine/            Python engine (runs in GitHub Actions)
   live_analysis.py Quote freshness, feed health, coverage and stale-data protection
   strategies.py    market regime, swing setups, momentum scoring
   backtest.py      trade-by-trade swing backtest + monthly portfolio backtest
+  longterm.py      My Plan's long-term rules: ranking, month-end review, market guard, "if you own it" sells,
+                   the Results-screen backtest and the weekly 18-year test (docs/data/longtest.json)
+  study.py         18-year strategy study on real prices, point-in-time (Tests workflow, commit message with [study])
   tracker.py       live track record of every recommendation
   news.py          RSS news, sentiment, red flags
   fundamentals.py  quality filter (ROE, debt, losses, P/E)
-  notify.py        ntfy / Telegram / Gmail alerts
+  alerts.py        the alert schedule: evening plan, morning reminder, one-time notes
+  notify.py        ntfy / Telegram / Gmail delivery, checked and logged in docs/data/alerts.json
   ai_notes.py      optional Claude research notes
   run.py           orchestrator (full / live modes)
 docs/              the web app (GitHub Pages): index.html, app.js, app.css, sw.js

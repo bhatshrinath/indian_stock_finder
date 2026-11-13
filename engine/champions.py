@@ -28,7 +28,7 @@ from . import config, data, fundamentals, news
 
 log = logging.getLogger(__name__)
 
-VERSION = 2                    # bump when the study changes, so the weekly file is rebuilt at once
+VERSION = 3                    # bump when the study changes, so the weekly file is rebuilt at once
 FILE = "champions.json"
 REFRESH_DAYS = 6               # the study changes slowly: rebuilt about once a week
 CRASH_MIN_FALL = 0.15          # a "crash" = the Nifty fell at least 15% from its high
@@ -532,6 +532,11 @@ def publish(uni: pd.DataFrame, n50: set[str], demo: bool = False, use_news: bool
             return None
         p = data.drop_unfinished_session(p)
     out = build(p, uni, n50, use_fundamentals=not demo, use_news=use_news and not demo)
+    try:                                   # My Plan's methods on the same long history (longtest.json)
+        from . import longterm
+        longterm.publish_long_test(p, uni, n50)
+    except Exception as exc:               # never lose the champions study because of the test
+        log.warning("18-year test failed: %s", exc)
     config.OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = config.OUT_DIR / FILE
     path.write_text(json.dumps(_clean(out), separators=(",", ":"), ensure_ascii=False), encoding="utf-8")

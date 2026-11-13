@@ -266,14 +266,15 @@ def _hold_path(opens, lows, closes, regime, e: int, h: int, trail, price_in: flo
 def holding_outcomes(f: Features, industries: dict[str, str], universe: set, n: int = 3,
                      horizons: tuple[int, ...] = (126, 252), stock_trail=config.HOLD_STOCK_TRAIL,
                      fund_trail=config.HOLD_FUND_TRAIL, monthly_check: bool = config.HOLD_MONTHLY_CHECK,
-                     keep_top: int = 6) -> dict:
+                     keep_top: int = 6, guard_out: np.ndarray | None = None) -> dict:
     """What happened to holdings the app would have suggested (Nifty 50, one per sector), held for
     ~6 and ~12 months with the app's safety rules: optional safety price that rises with the price,
-    selling everything while the market is falling, and (optionally) selling a stock that is no
-    longer among the strongest at a month end. Past results, not a promise."""
+    selling everything while the market guard says so (`guard_out`; default: Nifty below its 200-day
+    average), and (optionally) selling a stock that is no longer among the strongest at a month end.
+    Past results, not a promise."""
     c = f.close
     C, O, L = (x.to_numpy(dtype=float) for x in (c, f.open, f.low))
-    reg = f.regime.to_numpy()
+    reg = f.regime.to_numpy() if guard_out is None else np.where(np.asarray(guard_out, bool), 0, 1)
     cols = {s: k for k, s in enumerate(c.columns)}
     dates = c.index
     month_ends = [i for i in range(len(dates) - 1)

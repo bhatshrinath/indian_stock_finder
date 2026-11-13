@@ -71,8 +71,9 @@ jobs:
           git diff --cached --quiet && exit 0
           git commit -m "data: daily scan $(date -u +%Y-%m-%d)"
           for i in 1 2 3; do git pull --rebase -X theirs && git push && break; sleep 5; done
-      # Long-term champions (Advanced screen): ~19 years of prices, rebuilt about once a week.
-      # A separate step after the scan is published, so it can never delay or break the daily plan.
+      # Long-term champions (Advanced screen) and the 18-year test of My Plan's methods (longtest.json):
+      # ~19 years of prices, rebuilt about once a week. A separate step after the scan is published, so it
+      # can never delay or break the daily plan.
       - name: Long-term champions study (weekly)
         if: steps.check.outputs.done != 'true'
         continue-on-error: true
@@ -82,7 +83,7 @@ jobs:
         if: steps.check.outputs.done != 'true'
         continue-on-error: true
         run: |
-          git add docs/data/champions.json 2>/dev/null || exit 0
+          git add docs/data/champions.json docs/data/longtest.json 2>/dev/null || git add docs/data/champions.json 2>/dev/null || exit 0
           git diff --cached --quiet && exit 0
           git commit -m "data: long-term champions $(date -u +%Y-%m-%d)"
           for i in 1 2 3; do git pull --rebase -X theirs && git push && break; sleep 5; done

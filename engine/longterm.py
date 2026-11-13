@@ -16,6 +16,7 @@ first suggested and applies the safety price from then.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from datetime import date, timedelta
@@ -31,6 +32,7 @@ from .strategies import Features
 log = logging.getLogger(__name__)
 
 LOG_FILE = "suggested.json"
+TEST_FILE = "longtest.json"     # the 18-year test, rebuilt weekly with the champions study
 LOG_DAYS = 400              # forget a suggestion this long after it was last on the list
 
 
@@ -155,3 +157,112 @@ def stop_hits(log_: dict, f: Features, trail: float = config.HOLD_STOCK_TRAIL) -
             e["stopped"] = str(c.index[-1].date())
             hits.append({"symbol": sym, "high": _r(hi), "stop": _r(stop), "price": _r(last), "from": e["from"]})
     return hits
+
+
+# ======================================================================= the method, tested
+def method(name: str = "My Plan's method", **kw):
+    """The rules above as a study variant: what the Results screen and the 18-year test simulate."""
+    from . import study
+    base = dict(universe="n50", rank="mom", n=config.LT_PICKS, hold_mult=config.LT_KEEP_TOP / config.LT_PICKS,
+                index_w=1 / 3, guard=f"g2:{config.GUARD_BAND}", trail=config.HOLD_STOCK_TRAIL)
+    return study.Variant(name, **{**base, **kw})
+
+
+def _brief(ctx, eq, closed=None) -> dict:
+    from . import study
+    s = study.summary(ctx, eq, closed)
+    out = {"cagr": _r(100 * s["cagr"], 1), "worst_fall": _r(100 * s["maxdd"], 0), "under_water_months": _r(s["under_mo"], 0),
+           "up_years": s["up_years"], "n_years": s["n_years"], "worst_year": s["worst_year"][0],
+           "worst_year_pct": _r(100 * s["worst_year"][1], 0), "x": _r(s["x"], 1),
+           "yearly": {str(y): _r(100 * r, 0) for y, r in s["yearly"].items()}}
+    if closed is not None:
+        out.update(sells_per_year=_r(s["sells_per_year"], 1), held_days=_r(s["held_days"], 0),
+                   within_year_pct=_r(s["short_pct"], 0))
+    return out
+
+
+def app_backtest(p, uni: pd.DataFrame, n50: set[str], ixo: pd.Series | None = None) -> dict:
+    """My Plan's long-term method on the data given (the daily 5 years), against the index fund held:
+    the "Test: the app's long-term suggestions" card on the Results screen."""
+    from . import study
+    ctx = study.Ctx(p, ixo, uni, n50)
+    if ctx.start >= ctx.T - 120:
+        return {}
+    eq, closed, _ = study.simulate(ctx, method())
+    bq, _, _ = study.simulate(ctx, study.Variant("index", n=0, index_w=1.0, guard="none", trail=None))
+    e = pd.Series(eq[ctx.start:], index=ctx.dates[ctx.start:])
+    b = pd.Series(bq[ctx.start:], index=ctx.dates[ctx.start:])
+    me, mb = e.resample("ME").last(), b.resample("ME").last()
+    mr, br = me.pct_change().dropna(), mb.pct_change().dropna()
+    s, sb = _brief(ctx, eq, closed), _brief(ctx, bq)
+    return {"years": _r((e.index[-1] - e.index[0]).days / 365.25, 1), "cagr": s["cagr"], "bench_cagr": sb["cagr"],
+            "max_drawdown": s["worst_fall"], "bench_max_drawdown": sb["worst_fall"],
+            "pct_months_positive": _r(100 * (mr > 0).mean(), 1), "pct_months_beat_nifty": _r(100 * (mr > br).mean(), 1),
+            "sells_per_year": s.get("sells_per_year"),
+            "curve": [{"d": str(d.date()), "p": _r(100 * x / e.iloc[0], 1), "b": _r(100 * y / b.iloc[0], 1)}
+                      for d, x, y in zip(me.index, me.to_numpy(), mb.to_numpy())]}
+
+
+def long_test(p, uni: pd.DataFrame, n50: set[str], ixo: pd.Series | None = None) -> dict:
+    """The same method over all of Yahoo's history (from 2008), with the old rules, the index fund and a
+    stricter no-hindsight version for comparison. Rebuilt weekly with the long-term champions study."""
+    from . import study
+    ctx = study.Ctx(p, ixo, uni, n50)
+    if ctx.start >= ctx.T - 252 * 3:
+        return {}
+    rows = {}
+    for key, v in (("plan", method()),
+                   ("old", method("Old rules", guard="g1", hold_mult=2.0)),
+                   ("strict", method("No hindsight", universe="top50")),
+                   ("index", study.Variant("Index fund", n=0, index_w=1.0, guard="none", trail=None)),
+                   ("index_guard", study.Variant("Index fund + guard", n=0, index_w=1.0, guard=f"g2:{config.GUARD_BAND}", trail=None))):
+        eq, closed, _ = study.simulate(ctx, v)
+        rows[key] = _brief(ctx, eq, closed if v.n else None)
+        taxed, closed_t, _ = study.simulate(ctx, dataclasses.replace(v, tax=True))
+        rows[key]["after_tax"] = _brief(ctx, taxed)["cagr"]
+    return {"from": str(ctx.dates[ctx.start].date()), "to": str(ctx.dates[-1].date()),
+            "years": _r((ctx.dates[-1] - ctx.dates[ctx.start]).days / 365.25, 1), "rows": rows,
+            "rules": {"guard_band_pct": config.GUARD_BAND * 100, "keep_top": config.LT_KEEP_TOP, "picks": config.LT_PICKS,
+                      "stop_pct": config.HOLD_STOCK_TRAIL * 100, "index_part": "1/3"}}
+
+
+def short_test(p, n50: set[str]) -> dict:
+    """The short-term "safe dip" trade over all the history given (weekly, with the 18-year test). Its
+    5-year record looked fine, but a method must also hold up over 18 years before the plan uses it."""
+    from . import backtest
+    from .strategies import SWING_STRATEGIES
+    f = Features(p)
+    f.set_large(n50)
+    strat = next(s for s in SWING_STRATEGIES if s.key in config.SAFE_STRATEGIES)
+    r = backtest.backtest_swing(f, strat)
+    sim = backtest.portfolio_sim(f, strat, money=config.TRADE_AMOUNT, slots=1, per_day=1)
+    first = f.close.index[0]
+    years = (f.close.index[-1] - first).days / 365.25
+    ok = bool(r.get("trades") and (r.get("avg_return") or 0) > 0
+              and (r.get("profit_factor") or 0) >= config.SAFE_MIN_PROFIT_FACTOR)
+    return {"method": strat.key, "from": str(first.date()), "years": _r(years, 1), "trades": r.get("trades", 0),
+            "win_rate": r.get("win_rate"), "avg_return": r.get("avg_return"), "profit_factor": r.get("profit_factor"),
+            "money": config.TRADE_AMOUNT, "trading_profit": sim.get("total_profit"),
+            "liquid_fund_profit": round(config.TRADE_AMOUNT * ((1 + 0.06) ** years - 1)), "ok": ok}
+
+
+def load_long_test() -> dict:
+    try:
+        return json.loads((config.OUT_DIR / TEST_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def publish_long_test(p, uni: pd.DataFrame, n50: set[str]) -> dict:
+    """Write longtest.json (the Results screen and the short-trade safety gate read it)."""
+    from datetime import datetime, timezone
+    out = {"generated": datetime.now(timezone.utc).isoformat(), **long_test(p, uni, n50)}
+    try:
+        out["short_term"] = short_test(p, n50)
+    except Exception as exc:
+        log.warning("short-term long test failed: %s", exc)
+    config.OUT_DIR.mkdir(parents=True, exist_ok=True)
+    (config.OUT_DIR / TEST_FILE).write_text(json.dumps(out, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+    log.info("wrote %s: plan %s, short term %s", TEST_FILE, (out.get("rows") or {}).get("plan", {}).get("cagr"),
+             (out.get("short_term") or {}).get("ok"))
+    return out

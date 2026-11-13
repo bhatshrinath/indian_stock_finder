@@ -217,10 +217,12 @@ function updateHighs() {
 
 async function loadAll() {
   try {
-    const [latest, live, news] = await Promise.allSettled([getJSON("latest.json"), getLive(), getJSON("market_news.json")]);
+    const [latest, live, news, al] = await Promise.allSettled([getJSON("latest.json"), getLive(), getJSON("market_news.json"),
+      getJSON("alerts.json")]);
     if (latest.status === "fulfilled") S.latest = latest.value;
     if (live.status === "fulfilled") S.live = live.value;
     if (news.status === "fulfilled") S.news = news.value;
+    if (al.status === "fulfilled") S.alerts = al.value;            // what the phone was last told (engine/notify.py)
   } catch (e) { console.warn(e); }
   updateHighs();
   renderAll();
@@ -239,6 +241,7 @@ async function refreshLive() {
 async function loadResults() {
   if (!S.bt) { try { S.bt = await getJSON("backtest.json"); } catch { S.bt = {}; } }
   if (!S.track) { try { S.track = await getJSON("track_record.json"); } catch { S.track = { trades: [] }; } }
+  if (!S.longtest) { try { S.longtest = await getJSON("longtest.json"); } catch { S.longtest = {}; } }
   renderRecord();
 }
 
@@ -840,6 +843,34 @@ function rupeePicture(pf) {
     <div class="muted" style="margin-top:6px">The money was in a trade only about ${pf.invested_pct_of_time}% of the time.</div></div>`;
 }
 
+// My Plan's methods over ~18 years of real prices (data/longtest.json, rebuilt weekly by engine/longterm.py)
+function longTestCard() {
+  const T = S.longtest || {};
+  const R = T.rows || {};
+  if (!R.plan) return "";
+  const row = (label, r) => (r ? `<tr><td>${label}</td><td class="num ${tone(r.cagr)}">${pct(r.cagr)}</td>
+    <td class="num">${r.after_tax != null ? pct(r.after_tax) : "–"}</td><td class="num down">${pct(r.worst_fall, 0)}</td>
+    <td class="num">${r.up_years}/${r.n_years}</td></tr>` : "");
+  const st = T.short_term || {};
+  const short = st.trades ? `<p class="small">⚡ <b>Short-term "dip" trade</b> over the same ${Math.round(st.years)} years: ${st.ok
+    ? "it made money after charges."
+    : `it <b class="down">lost money after charges</b> (${inr(st.money)} used one trade at a time: ${moneySigned(st.trading_profit)};
+       the same money in a liquid fund: about +${inr(st.liquid_fund_profit)}). So the app no longer suggests it.`}</p>` : "";
+  return `<h2>Tested on ${Math.round(T.years)} years of real prices</h2><div class="card">
+    <p class="small">${esc((T.from || "").slice(0, 4))} to ${esc((T.to || "").slice(0, 4))}: the 2008 crash, 2011, 2015-16, 2018, COVID 2020, 2022 and 2024-26.
+      Only the prices known at each moment were used, and charges are included.</p>
+    <div class="table-wrap"><table><thead><tr><th></th><th class="num">Per year</th><th class="num">After tax</th><th class="num">Worst fall</th><th class="num">Years up</th></tr></thead><tbody>
+      ${row("<b>My Plan's method</b>", R.plan)}
+      ${row("Old rules <div class='muted small'>sold at the first close below the 200-day average</div>", R.old)}
+      ${row("Index fund + the same market guard", R.index_guard)}
+      ${row("Nifty 50 index fund, just held", R.index)}
+      ${row("My Plan's method, strict test <div class='muted small'>the 50 most traded shares at the time (no hindsight)</div>", R.strict)}
+    </tbody></table></div>
+    <p class="small muted">Honest note: the main test uses today's Nifty 50 companies, which have already proved themselves, and companies that collapsed are missing.
+      In the strict test the shares added much less, so most of the safety comes from the index fund and the market guard. Past results, not a promise.</p>
+    ${short}</div>`;
+}
+
 function renderRecord() {
   const el = $("#tab-record");
   const L = S.latest;
@@ -871,6 +902,7 @@ function renderRecord() {
       <details><summary>Other methods (not used in safe mode)</summary><ul class="rules small">${simple}</ul></details>`
       : simple ? `<p>Tested on the past 5 years of prices:</p><ul class="rules">${simple}</ul>` : ""}
     <p class="small muted">No method wins every time. The goal is small losses and bigger or more frequent wins.</p></div>
+    ${longTestCard()}
     <h2>Live track record</h2>
     <div class="card"><p class="small muted">Every BUY idea is recorded the day it's published and followed to its real exit. No hindsight, no editing.${t.since ? " Tracking since " + esc(fmtDate(t.since)) + "." : ""}</p>
     <div class="kv"><div><span>Closed trades</span><b>${t.closed || 0}</b></div><div><span>Win rate</span><b>${pct(t.win_rate, 0, false)}</b></div>
@@ -886,8 +918,9 @@ function renderRecord() {
   html += `<h2>Backtest: swing setups</h2>
     <p class="small muted">Simulated on ${esc(bt.data_from || "")} → ${esc(bt.data_to || "")} data, after ${num(bt.cost_round_trip_pct, 2)}% round-trip costs.
     Profit factor = total gains ÷ total losses: above 1.0 made money, above 1.3 is good.</p>
-    <div class="grid">${Object.entries(sw).map(([k, s]) => `<div class="card"><div class="row"><h3>${esc(s.name || k)}</h3>
-      <span class="badge ${working(s) ? "b-high" : "b-red"}">${working(s) ? "Working" : "Weak - not used"}</span></div>
+    <div class="grid">${Object.entries(sw).map(([k, s]) => { const off = L.safe?.methods?.[k] && !L.safe.methods[k].ok;
+      return `<div class="card"><div class="row"><h3>${esc(s.name || k)}</h3>
+      <span class="badge ${working(s) && !off ? "b-high" : "b-red"}">${off ? "Paused" : working(s) ? "Working" : "Weak - not used"}</span></div>
       <div class="kv">
         <div><span>Trades tested</span><b>${num(s.trades, 0)}</b></div>
         <div><span>Winners</span><b>${pct(s.win_rate, 0, false)}</b></div>
@@ -897,7 +930,7 @@ function renderRecord() {
         <div><span>Typical hold</span><b>${num(s.avg_days, 0)} days</b></div>
         <div><span>Last 12 months</span><b>${pct(s.last_12m?.win_rate, 0, false)} win · <span class="${tone(s.last_12m?.avg_return)}">${pct(s.last_12m?.avg_return, 2)}</span></b></div>
         <div><span>Worst losing streak</span><b>${s.max_losing_streak ?? "–"} in a row</b></div>
-      </div></div>`).join("")}</div>`;
+      </div></div>`; }).join("")}</div>`;
   for (const [k, s] of Object.entries(sw)) {
     if (!s.yearly) continue;
     html += `<details class="card"><summary>${esc(s.name || k)}: year by year</summary><table><thead><tr><th>Year</th><th class="num">Trades</th><th class="num">Win %</th><th class="num">Avg</th></tr></thead><tbody>
@@ -907,14 +940,15 @@ function renderRecord() {
   const g = bt.long_term_guarded || {};
   const ap = bt.long_term_app || {};
   if (ap.curve) {
-    html += `<h2>Test: the app's long-term suggestions</h2><div class="card">
-      <p class="small">About a third in the Nifty 50 index fund, the rest in 3 strong Nifty 50 companies from different sectors, checked monthly.
-        Everything is sold while the whole market is falling. Over the last ${ap.years} years.
-        (Only the price checks can be tested on the past. The business and news checks are added live.)</p>
+    html += `<h2>Test: My Plan's long-term method, last ${ap.years} years</h2><div class="card">
+      <p class="small">About a third in the Nifty 50 index fund, the rest in the 3 strongest Nifty 50 companies from different industries.
+        A share is kept while it stays among the 9 strongest (checked at each month end) and sold if it falls 25% below its best price.
+        Everything is sold when the Nifty closes 3% below its 200-day average, and bought again once it is back above.
+        (Only the price rules can be tested on the past. The business and news checks are added live.)</p>
       ${lineChart(ap.curve)}
       <div class="table-wrap"><table><thead><tr><th></th><th class="num">Per year</th><th class="num">Worst fall</th><th class="num">Months beating Nifty</th></tr></thead><tbody>
-      <tr><td><b>App's suggestions</b></td><td class="num ${tone(ap.cagr)}">${pct(ap.cagr)}</td><td class="num down">${pct(ap.max_drawdown)}</td><td class="num">${pct(ap.pct_months_beat_nifty, 0, false)}</td></tr>
-      <tr><td>Nifty 50</td><td class="num">${pct(ap.bench_cagr)}</td><td class="num down">${pct(ap.bench_max_drawdown)}</td><td class="num">–</td></tr>
+      <tr><td><b>My Plan's method</b></td><td class="num ${tone(ap.cagr)}">${pct(ap.cagr)}</td><td class="num down">${pct(ap.max_drawdown)}</td><td class="num">${pct(ap.pct_months_beat_nifty, 0, false)}</td></tr>
+      <tr><td>Nifty 50 index fund, held</td><td class="num">${pct(ap.bench_cagr)}</td><td class="num down">${pct(ap.bench_max_drawdown)}</td><td class="num">–</td></tr>
       </tbody></table></div></div>`;
   }
   if (lt.curve) {
@@ -940,12 +974,31 @@ function renderNews() {
     <p class="small muted">🟢 positive · 🔴 negative · ⚪ neutral (automatic word-based reading, can be wrong). News for each recommended stock is inside its card.</p>`;
 }
 
+// ------------------------------------------------------------------ phone alerts: was the last one delivered?
+// The engine records every message and the alert service's answer in data/alerts.json.
+function alertStatus() {
+  const a = S.alerts || {};
+  const last = a.last;
+  if (!last) return (a.channels || S.latest?.alert_channels || []).length ? "📲 Phone alerts: the first one comes with the next evening plan (about 4:30 PM)." : "";
+  const when = `${fmtDate(last.at)}, ${fmtClock(last.at)}`;
+  return last.ok ? `📲 Last phone alert: ${esc(when)} ✓`
+    : `⚠️ The last phone alert could not be delivered (${esc(when)}). The app tries again with the next one.`;
+}
+
+function alertDetails() {
+  const a = S.alerts || {};
+  const rows = (a.log || []).slice(0, 5).map((e) => `<li>${e.ok ? "✓" : "⚠️"} ${esc(fmtDate(e.at))} ${esc(fmtClock(e.at))}: ${esc(e.title)}</li>`).join("");
+  const err = a.last_error && (!a.last_ok || a.last_error.at > a.last_ok)
+    ? `<div class="callout bad small">Last problem: ${esc(a.last_error.error || "unknown")} (${esc(fmtDate(a.last_error.at))})</div>` : "";
+  return `${err}${rows ? `<ul class="small" style="margin:6px 0 0;padding-left:0;list-style:none">${rows}</ul>` : ""}`;
+}
+
 // ------------------------------------------------------------------ SETTINGS
 function renderSettings() {
   const el = $("#tab-settings");
   const st = settings();
   const L = S.latest || {};
-  const ch = L.alert_channels || [];
+  const ch = (L.alert_channels || []).length ? L.alert_channels : (S.alerts?.channels || []);
   const perm = "Notification" in window ? Notification.permission : "unsupported";
   const notifyOn = perm === "granted" && st.notify;
   el.innerHTML = `<h2>⚙️ Settings & help</h2>
@@ -953,7 +1006,10 @@ function renderSettings() {
       <label class="field">🛡 Protect my money<span class="hint">Keeps most of it in an FD / liquid fund, so a bad year in shares is covered by the interest. The amount itself is set at the top of My Plan.</span>
         <select id="s-protect"><option value="1" ${st.protect ? "selected" : ""}>Yes (recommended)</option><option value="0" ${st.protect ? "" : "selected"}>No, use all of it for shares</option></select></label>
       <div class="line"><span class="ic">🔔</span><div><b>Alerts on this device:</b> ${notifyOn ? "✅ on" : "off"}
-        <div class="small muted">Phone push when the app is closed: ${ch.length ? "✅ " + ch.map(esc).join(", ") : "not set up"}.</div></div></div>
+        <div class="small muted">Phone push when the app is closed: ${ch.length ? "✅ " + ch.map(esc).join(", ") : "not set up"}.</div>
+        ${ch.length ? `<div class="small" style="margin-top:4px">${alertStatus() || ""}</div>
+          <div class="small muted">Every weekday at about 4:30 PM: the plan for the next day (also on quiet days). 8:45 AM: a reminder only when something must be bought or sold.</div>
+          ${alertDetails()}` : ""}</div></div>
       <div class="btns two"><button class="btn primary" id="s-protect-save">Save</button><button class="btn" id="s-notify">${notifyOn ? "Turn alerts off" : "Turn alerts on"}</button></div>
     </div>
     <h2>❓ How to use</h2>
@@ -1023,12 +1079,18 @@ function latestPrice(sym) {
   const q = livePrice(sym);
   if (q) return q.price;
   const L = S.latest || {};
-  const a = (L.swing || []).find((x) => x.symbol === sym);
-  if (a) return a.price;
-  const b = (L.long_term?.picks || []).find((x) => x.symbol === sym);
-  if (b) return b.price;
+  // a live quote from a day after the evening data (e.g. today, after the close) is the newest price
+  const lq = liveQuote(sym);
+  if (lq?.price && lq.date && L.data_date && lq.date > L.data_date) return lq.price;
+  for (const list of [L.swing, L.long_term?.picks, L.long_term_safe, L.funds]) {
+    const a = (list || []).find((x) => x.symbol === sym && x.price);
+    if (a) return a.price;
+  }
+  if (L.closes?.[sym]) return L.closes[sym];                  // the last close of every share (engine)
   const c = (L.open_trades || []).find((x) => x.symbol === sym && x.last_price);
-  return c ? c.last_price : null;
+  if (c) return c.last_price;
+  if (lq?.price) return lq.price;
+  return (S.champ?.stocks || []).find((x) => x.symbol === sym)?.price ?? null;
 }
 
 function greeting() {
@@ -1056,12 +1118,14 @@ function positionStatus(p) {
         effectiveTarget = Math.round((q.open + systemTrade.target - systemTrade.signal_close) * 100) / 100;
     }
   }
-  if (p.kind === "long_term") {
-    // the safety price rises with the price: always 25% (10% for the index fund) below the highest price since buying
+  if (p.kind === "long_term" && trailPct(p)) {
+    // shares: the safety price rises with the price, always 25% below the highest price since buying
     const trailStop = Math.round((p.high ?? p.price) * (1 - trailPct(p)) * 100) / 100;
     effectiveStop = Math.max(effectiveStop ?? 0, trailStop);
+  } else if (p.kind === "long_term" && isFundSym(p.symbol)) {
+    effectiveStop = null;            // the index fund is sold only by the market guard (tested on 18 years)
   }
-  const removed = p.kind === "long_term" && (L.long_term?.changes?.removed || []).includes(p.symbol);
+  const review = reviewSell(p);
   const plAmt = now != null ? (now - p.price) * p.qty : null;
   const plPct = now != null ? (now / p.price - 1) * 100 : null;
   let st;
@@ -1079,21 +1143,18 @@ function positionStatus(p) {
       : "The plan says this trade is finished. Sell when the market opens.";
     st = { cls: "good", icon: "💰", head, text };
   }
-  else if (p.kind === "long_term" && (L.market?.regime ?? 1) === 0 && !p.symbol.endsWith("GOLDBEES"))
-    st = { cls: "warn", icon: "🛡", head: "SELL (market falling)", text: "The whole market has turned down. Sell and keep the money safe. The app will suggest when to buy again." };
-  else if (p.kind === "long_term" && p.symbol !== "NIFTYBEES" && p.symbol !== "GOLDBEES"
-           && (Date.now() - new Date(p.date).getTime()) / 864e5 >= 28
-           && !(L.long_term_safe || []).slice(0, 6).some((x) => x.symbol === p.symbol))
-    st = { cls: "warn", icon: "🔁", head: "SELL (monthly check)", text: "It is no longer among the strongest. Sell it and buy the new suggestion instead." };
-  else if (removed)
-    st = { cls: "warn", icon: "🔁", head: "SELL (monthly change)", text: "This stock has left the long-term list. Sell it and use the money for the new stocks in Invest." };
+  else if (p.kind === "long_term" && guardOut() && !p.symbol.endsWith("GOLDBEES"))
+    st = { cls: "warn", icon: "🛡", head: "SELL (market falling)", text: "The whole market has turned down: the Nifty closed more than 3% below its 200-day average. Sell and keep the money in a liquid fund or FD. The app will say when to buy again." };
+  else if (review)
+    st = { cls: "warn", icon: "🔁", head: "SELL (monthly review)", text: `At the month-end review (${esc(fmtDate(review))}) it was no longer among the 9 strongest. Sell it and use the money for today's buy list.` };
   else if (p.kind === "swing" && p.sellBy && new Date().toISOString().slice(0, 10) > p.sellBy)
     st = { cls: "warn", icon: "⏱", head: "SELL", text: "The short-term trade's time is up. Sell at the market opening." };
   else if (effectiveStop && now != null && (now - effectiveStop) / now < 0.02)
     st = { cls: "warn", icon: "🟡", head: "HOLD, but watch", text: `The price is close to your safety price (${px(effectiveStop)}).` };
   else
     st = { cls: "ok", icon: "🟢", head: "HOLD", text: p.kind === "long_term"
-      ? `Hold. Sell if it falls to ${px(effectiveStop)} (this rises as the price rises). The app checks it every month.`
+      ? (effectiveStop ? `Hold. Sell if it falls to ${px(effectiveStop)} (this rises as the price rises). Checked again at each month end.`
+        : "Hold. The index fund is sold only if the whole market turns down: the app will tell you.")
       : `Nothing to do. The app will tell you when to sell${p.sellBy ? ` (at the latest around ${fmtDate(p.sellBy)})` : ""}.` };
   return { ...st, now, plAmt, plPct, stop: effectiveStop, action: st.head !== "HOLD" && st.head !== "HOLD, but watch" };
 }
@@ -1184,7 +1245,9 @@ function holdPlanLine(p) {
   if (p.kind === "long_term") {
     const H = S.latest?.expect?.holding || {};
     const r = (isFundSym(p.symbol) ? H.fund : H.stock)?.["6m"];
-    return `<div class="small muted">📅 Plan: hold about 6 to 12 months (${esc(fmtDate(addDays(p.date, 182)))} to ${esc(fmtDate(addDays(p.date, 365)))}), checked monthly.</div>
+    const plan = isFundSym(p.symbol) ? "📅 Plan: keep holding; sold only if the whole market turns down."
+      : `📅 Plan: keep it while it stays among the strongest (checked at each month end). Kept past ${esc(fmtDate(addDays(p.date, 366)))}, the profit is taxed less.`;
+    return `<div class="small muted">${plan}</div>
       ${r && r.n >= 8 ? `<div class="small muted">🎯 Typical after 6 months: about ${px(p.price * (1 + r.median / 100))} (${pct(r.median, 0)}); good case ${px(p.price * (1 + r.p75 / 100))}.</div>` : ""}`;
   }
   return p.sellBy ? `<div class="small muted">📅 Time limit: sell by about ${esc(fmtDate(p.sellBy))} at the latest.</div>` : "";
@@ -1467,19 +1530,20 @@ function basket() {
   const L = S.latest || {};
   const M = tradeMoney();
   const nHold = M < 3000 ? 1 : M < 6000 ? 2 : M < 12000 ? 3 : 4;
-  // market guard (tested): when the whole market is falling, buy nothing
-  if ((L.market?.regime ?? 1) === 0) return [];
+  // market guard (tested on 18 years): while the whole market is falling, buy nothing
+  if (guardOut()) return [];
   const large = L.long_term_safe || [];
-  const mids = L.mid_safe || [];
   const funds = L.funds || [];
   const idx = funds.find((f) => f.symbol === "NIFTYBEES");
-  const gold = funds.find((f) => f.symbol === "GOLDBEES" && f.uptrend);
   const swing = (L.plan?.buy || [])[0];
   const order = [];
   if (swing && M >= MIN_SHORT_TERM) order.push({ ...swing, _swing: true });
-  // tested recipe: Nifty 50 index fund + up to 3 strong companies from different sectors
-  order.push(idx, large[0], large[1], mids[0] || large[2], large[2], large[3], large[4]);
-  void gold;                                           // gold is not part of the tested recipe
+  // tested recipe: Nifty 50 index fund + up to 3 of the strongest big companies, one per industry.
+  // Across everything you own: new industries first; a share you already own (still a top pick) after them.
+  const held = heldIndustries();
+  const fresh = large.filter((x) => !held.has(x.industry));
+  const adds = large.filter((x) => held.get(x.industry) === x.symbol).map((x) => ({ ...x, _add: true }));
+  order.push(idx, ...fresh, ...adds);
   const seenInd = new Set();
   const cand = order.filter(Boolean).filter((x) => {
     const ind = x.industry || x.symbol;
@@ -1497,24 +1561,24 @@ function basket() {
     const per = amountFor(x);
     const isFund = x.size === "fund";
     const tag = x._swing ? "Short term · about 1 week"
-      : isFund ? "Long term · hold for months" : "Long term · 6 to 12 months";
+      : isFund ? "Long term · hold for months" : "Long term · checked monthly";
     const type = x._swing ? "Big company · quick bounce trade"
       : isFund ? x.type
-      : x.size === "mid" ? `Mid-size company · ${x.industry} · passed extra-strict checks`
-      : `Big company · ${x.industry}`;
-    const checks = isFund ? "✓ Price rising" : "✓ Strong business · ✓ Price rising · ✓ News fine · ✓ Market OK";
+      : `Big company · ${x.industry}${x._add ? " · adds to what you own" : ""}`;
+    const checks = isFund ? "✓ Market OK" : "✓ Among the strongest · ✓ Strong business · ✓ News fine · ✓ Market OK";
     return {
-      kind: x._swing ? "swing" : "long_term", amount: per, symbol: x.symbol, name: x.name,
+      kind: x._swing ? "swing" : "long_term", amount: per, symbol: x.symbol, name: x.name, industry: x.industry,
       strategy: x.strategy, strategy_name: (L.swing || []).find((y) =>
         y.symbol === x.symbol && y.strategy === x.strategy)?.strategy_name,
       planId: x.id, signal_date: x.signal_date, price: x.price,
       max_entry: x.max_entry || +(x.price * 1.02).toFixed(2), stop: x._swing ? x.stop : x.review_below,
       horizon: tag, type, checks: x._swing ? "✓ Strong past record · ✓ Market rising" : checks,
       sellRule: x._swing ? "The app will tell you when to sell (usually within a week)."
-        : `Hold for months. Sell if it falls below ${px(x.review_below)}, or when the app says.`,
+        : isFund ? "Hold for months. Sold only if the whole market turns down: the app will tell you."
+        : `Hold while it stays among the strongest. Sell if it falls below ${px(x.review_below)} (this rises as the price rises), or when the app says.`,
       why: x._swing ? (SIMPLE[x.strategy] || {}).why
         : isFund ? `${x.type}. Spreads your money so one company can't hurt much.`
-        : `Among the strongest steady risers in its sector, with a profitable, low-debt business${x.fundamentals?.roe ? ` (return on equity ${num(x.fundamentals.roe, 0)}%)` : ""}.`,
+        : `${x.rank ? `Number ${x.rank} of India's 50 biggest companies by 6 and 12-month price strength` : "Among the strongest of India's 50 biggest companies"}, with a profitable, low-debt business${x.fundamentals?.roe ? ` (return on equity ${num(x.fundamentals.roe, 0)}%)` : ""}.`,
       odds: x._swing ? outOf10(x.hist_win_rate) : null,
       isFund,
       hist: x._swing ? { p10: x.hist_p10, median: x.hist_median, p75: x.hist_p75, p90: x.hist_p90,
@@ -1588,11 +1652,56 @@ function protectedSuggestions() {
 const sgn = (v) => (v >= 0 ? "+" : "−");
 const moneySigned = (v) => `${sgn(v)}${inr(Math.abs(v))}`;
 const isFundSym = (sym) => sym === "NIFTYBEES" || sym === "GOLDBEES";
-// safety-price width comes from the engine's tested rule (25% for shares, 10% for the index fund)
+// safety price that rises with the price: 25% below the best price since buying, for shares only.
+// The index fund has none: it is sold only by the market guard below (both tested on 18 years).
 const trailPct = (p) => {
+  if (isFundSym(p.symbol)) return 0;
   const H = S.latest?.expect?.holding || {};
-  return (isFundSym(p.symbol) ? H.fund_trail_pct ?? 10 : H.stock_trail_pct ?? 25) / 100;
+  return (H.stock_trail_pct ?? 25) / 100;
 };
+
+// ---------------------------------------------------------------- the long-term rules (engine/longterm.py)
+// Market guard: everything is sold only when the Nifty closes 3% below its 200-day average, and bought
+// again once it closes back above the average. Month-end review: a share stays while it ranks in the top 9.
+const ltSig = () => S.latest?.lt_signals || {};
+const guardInfo = () => ltSig().guard || S.latest?.market?.guard || null;
+const guardOut = () => { const g = guardInfo(); return g ? !!g.out : (S.latest?.market?.regime ?? 1) === 0; };
+
+// the date of the month-end review that says "sell", or null
+function reviewSell(p) {
+  const rv = ltSig().review;
+  if (p.kind !== "long_term" || isFundSym(p.symbol) || !rv?.date || !rv.keep || !(rv.universe || []).includes(p.symbol)) return null;
+  if ((p.date || "").slice(0, 10) > rv.date) return null;            // bought after the review: the next one decides
+  if (rv.keep.includes(p.symbol) || (ltSig().buy || []).some((b) => b.symbol === p.symbol)) return null;
+  return rv.date;
+}
+
+function industryOf(sym) {
+  const L = S.latest || {};
+  const x = [...(L.long_term_safe || []), ...(L.long_term?.picks || []), ...(L.swing || [])].find((y) => y.symbol === sym);
+  return x?.industry || (S.champ?.stocks || []).find((y) => y.symbol === sym)?.industry || null;
+}
+
+// industries already owned through a long-term share the app still says to keep (industry -> symbol)
+function heldIndustries() {
+  const out = new Map();
+  for (const p of myPositions()) {
+    if (p.kind !== "long_term" || isFundSym(p.symbol)) continue;
+    const ind = p.industry || industryOf(p.symbol);
+    if (ind && !positionStatus(p).action) out.set(ind, p.symbol);
+  }
+  return out;
+}
+
+// one line on the market, with the level that would make the app sell everything
+function marketLine() {
+  const L = S.latest || {}, g = guardInfo() || {}, reg = L.market?.regime ?? 1;
+  const nifty = L.market?.nifty != null ? `Nifty ${num(L.market.nifty, 0)}` : "";
+  if (g.out) return { cls: "bad", text: `🔴 <b>Market falling.</b> Sell long-term shares and the index fund; keep the money in a liquid fund or FD. Buy again once the Nifty closes above ${num(g.buy_above, 0)}.` };
+  if (reg === 0) return { cls: "warn", text: `🟠 <b>Market weak.</b> ${nifty}, a little below its 200-day average. Keep holding: the app sells everything only if it closes below ${num(g.sell_below, 0)}.` };
+  const head = reg === 2 ? "🟢 <b>Market rising.</b>" : "🟡 <b>Market unsure.</b>";
+  return { cls: reg === 2 ? "good" : "info", text: `${head} ${nifty}. Long-term buying is fine.${g.sell_below ? ` The app would sell everything only below ${num(g.sell_below, 0)}.` : ""}` };
+}
 
 function addBusinessDays(iso, n) {
   const d = new Date(iso + "T00:00:00Z");
@@ -1647,18 +1756,20 @@ function holdLine(x) {
     const h = x.hist || {};
     return `Usually sold in about ${h.days || 5} days (at most ${h.daysMax || 10}). The app tells you when.`;
   }
-  return x.isFund ? "Hold for months; no end date. The app checks every month and tells you if to sell."
-    : "Hold 6 to 12 months. The app checks every month and tells you if to sell earlier.";
+  return x.isFund ? "Hold for months; no end date. Sold only if the whole market turns down: the app will tell you."
+    : "Hold while it stays among the strongest (checked at each month end). Kept a year or more, the profit is taxed less.";
 }
 
 function orderDetails(x, qty) {
   const L = S.latest || {};
   const total = qty * x.max_entry;
   const charges = Math.round(total * 0.003 + 16);
-  const maxLoss = Math.max(0, qty * (x.max_entry - x.stop));
+  const maxLoss = x.stop ? Math.max(0, qty * (x.max_entry - x.stop)) : null;
   const valid = L.data_date ? addBusinessDays(L.data_date, 3) : null;
-  const trail = x.kind === "long_term"
-    ? `<div class="line"><span class="ic">⬆</span><div>The safety price <b>rises as the price rises</b>: it always stays ${Math.round(trailPct(x) * 100)}% below the highest price since you bought. My Stocks shows the current one. Move your sell order up when it changes.</div></div>` : "";
+  const g = guardInfo() || {};
+  const trail = x.kind === "long_term" && x.stop
+    ? `<div class="line"><span class="ic">⬆</span><div>The safety price <b>rises as the price rises</b>: it always stays ${Math.round(trailPct(x) * 100)}% below the highest price since you bought. My Stocks shows the current one. Move your sell order up when it changes.</div></div>`
+    : x.kind === "long_term" ? `<div class="line"><span class="ic">🛡</span><div><b>No safety price for the index fund.</b> It is sold only if the whole market turns down: the Nifty closing 3% below its 200-day average${g.sell_below ? ` (about ${num(g.sell_below, 0)} now)` : ""}. The app will tell you.</div></div>` : "";
   return `<details id="od-${esc(x.kind)}-${esc(x.symbol)}"><summary>Details: what to expect, how to order</summary>
     ${expectBlock(x, qty)}
     <div class="line"><span class="ic">📅</span><div>Suggested on <b>${esc(fmtDate(L.data_date))}</b>. Valid for 3 trading days${valid ? ` (until <b>${esc(fmtDate(valid))}</b>)` : ""}. After that, use the newer list.</div></div>
@@ -1666,10 +1777,10 @@ function orderDetails(x, qty) {
       <ol class="small steps"><li>Search <b>${esc(x.symbol)}</b> (NSE).</li>
         <li>Choose <b>BUY</b> · <b>Delivery</b> (CNC) · <b>Limit order</b>.</li>
         <li>Price <b>${px(x.max_entry)}</b> · Quantity <b>${num(qty, 0)}</b>. A limit order means you never pay more than that.</li>
-        <li>Once it's bought, set a <b>stop-loss / GTT sell order</b> for all ${num(qty, 0)} shares with trigger price <b>${px(x.stop)}</b>.</li>
+        ${x.stop ? `<li>Once it's bought, set a <b>stop-loss / GTT sell order</b> for all ${num(qty, 0)} shares with trigger price <b>${px(x.stop)}</b>.</li>` : ""}
         <li>Tap <b>"I bought this"</b> here and enter the price you paid.</li></ol></div></div>
     <div class="line"><span class="ic">💵</span><div>About <b>${inr(total)}</b> in total, plus about <b>${inr(charges)}</b> in charges for buying and selling.</div></div>
-    <div class="line"><span class="ic">🛡</span><div>Most you could lose if the safety price is hit: about <b class="down">${inr(maxLoss)}</b>.</div></div>
+    ${maxLoss != null ? `<div class="line"><span class="ic">🛡</span><div>Most you could lose if the safety price is hit: about <b class="down">${inr(maxLoss)}</b>.</div></div>` : ""}
     ${trail}
     <div class="line"><span class="ic">⏱</span><div>${esc(holdLine(x))}</div></div>
     <p class="small">${esc(x.why || "")}${x.odds ? ` In the past 5 years, trades like this made money ${x.odds} out of 10 times.` : ""}</p>
@@ -1698,7 +1809,9 @@ function suggestionCard(x) {
     <div class="row"><div><h3>${esc(x.name)}</h3><div class="muted small">${esc(x.type || x.symbol)}</div></div>
       <span class="badge ${x.kind === "swing" ? "b-watch" : "b-new"}">${esc(x.horizon)}</span></div>
     <div class="do">${qty ? `Buy <b>${shares(qty)}</b>` : `<span class="small">One share costs more than ${inr(amt)}. Skip.</span>`}</div>
-    ${qty ? `<div class="small">Pay up to <b>${px(x.max_entry)}</b> (about ${inr(qty * x.max_entry)}). Sell if it falls to <b>${px(x.stop)}</b>${x.kind === "long_term" ? " (rises as the price rises)" : ""}.</div>` : ""}
+    ${qty ? `<div class="small">Pay up to <b>${px(x.max_entry)}</b> (about ${inr(qty * x.max_entry)}). ${x.stop
+      ? `Sell if it falls to <b>${px(x.stop)}</b>${x.kind === "long_term" ? " (rises as the price rises)" : ""}.`
+      : "Sell only if the whole market turns down: the app will tell you."}</div>` : ""}
     ${x.checks ? `<div class="small up" style="margin-top:6px">${esc(x.checks)}</div>` : ""}
     ${qty ? liveVsLimit(x) : ""}
     ${qty ? `<div class="small" style="margin-top:6px">⏱ ${esc(holdLine(x))}</div>` : ""}
@@ -1735,8 +1848,17 @@ function renderSuggestions() {
   const ageDays = L.data_date ? (Date.now() - new Date(L.data_date + "T00:00:00Z").getTime()) / 864e5 : 0;
   if (ageDays > 4.5) html += `<div class="callout bad">These suggestions are from ${esc(fmtDate(L.data_date))} and may be out of date. Wait for the next update before buying.</div>`;
   if (act.length) {
-    html += `<h2>⚠️ Do this first</h2>` + act.map(({ p, s }) => `<div class="card st-card ${s.cls}"><div class="status-head">${s.icon} ${s.head}: ${esc(p.symbol)}</div><div class="small">${s.text}</div></div>`).join("");
+    // one card per instruction: "SELL (market falling): A, B, C" rather than the same words three times
+    const groups = new Map();
+    for (const { p, s } of act) {
+      const k = `${s.head}|${s.text}`;
+      if (!groups.has(k)) groups.set(k, { s, syms: [] });
+      groups.get(k).syms.push(p.symbol);
+    }
+    html += `<h2>⚠️ Do this first</h2>` + [...groups.values()].map(({ s, syms }) => `<div class="card st-card ${s.cls}"><div class="status-head">${s.icon} ${s.head}: ${syms.map(esc).join(", ")}</div><div class="small">${s.text}</div></div>`).join("");
   }
+  const ml = marketLine();
+  html += `<div class="callout ${ml.cls} small" id="market-line">${ml.text}</div>`;
   if (!moneyIsSet()) html += planWelcome();
   else {
     const chips = [5000, 10000, 15000, 20000];
@@ -1767,19 +1889,28 @@ function renderSuggestions() {
   }
   html += `<h2>🛒 What to buy</h2>`;
   html += list.length ? list.map(suggestionCard).join("")
-    : `<div class="card empty">🙏 No suggestions today. The app only suggests when the odds are clearly good.</div>`;
+    : `<div class="card empty">🙏 ${guardOut()
+      ? `Nothing to buy while the whole market is falling. The app will say when to buy again (once the Nifty closes above ${num(guardInfo()?.buy_above, 0)}).`
+      : "No suggestions today. The app only suggests when the odds are clearly good."}</div>`;
   html += myStocksBlock();
   html += newsBlock(list);
   const hasShort = list.some((x) => x.kind === "swing");
-  const why = (L.market?.regime ?? 1) !== 2 ? "this method buys only when the whole market is rising, and right now it isn't"
+  const paused = Object.values(L.safe?.methods || {}).find((m) => !m.ok);
+  const why = paused ? `it is switched off: ${String(paused.why || "").replace(/\.$/, "").toLowerCase()}`
+    : (L.market?.regime ?? 1) !== 2 ? "this method buys only when the whole market is rising, and right now it isn't"
     : (L.plan?.buy || []).length ? `a short trade needs at least ${inr(MIN_SHORT_TERM)} (charges eat smaller ones)` : "no stock passed the checks today";
   const until = L.data_date ? addBusinessDays(L.data_date, 3) : null;
+  const g = guardInfo() || {};
   html += `<details id="gtk-box" class="card small"><summary>ℹ️ Good to know</summary>
     <div class="line"><span class="ic">🔄</span><div><b>Suggestions can change.</b> Re-checked every weekday evening. Today's list is valid for 3 trading days${until ? ` (until ${esc(fmtDate(until))})` : ""}. If the price is above the "pay up to" price, skip it.</div></div>
-    ${hasShort ? "" : `<div class="line"><span class="ic">⚡</span><div><b>Short term (about 1 week):</b> none today, because ${why}.</div></div>`}
+    <div class="line"><span class="ic">🛡</span><div><b>When to sell</b> (the app tells you each time):
+      a share that falls 25% below its best price since you bought it; a share that is no longer among the 9 strongest at the month-end review;
+      and everything, including the index fund, if the Nifty closes 3% below its 200-day average${g.sell_below ? ` (below about ${num(g.sell_below, 0)} now)` : ""}.
+      Tested on 18 years of prices (Advanced → Results so far).</div></div>
+    ${hasShort ? "" : `<div class="line"><span class="ic">⚡</span><div><b>Short term (about 1 week):</b> none today, because ${esc(why)}.</div></div>`}
     <div class="line"><span class="ic">🚫</span><div><b>Same-day trading:</b> never. SEBI found about 7 in 10 people who trade within the day lose money.</div></div>
-    <div class="line"><span class="ic">🛡</span><div><b>Always sell at the safety price.</b> Small losses are normal; big ones are what hurt. Some weeks there is nothing to buy, and that's fine.</div></div></details>
-    <p class="small muted center">Buy at the market opening (9:15 AM). Updated ${esc(ago(L.generated))}.</p>
+    <div class="line"><span class="ic">🧾</span><div><b>Tax:</b> profit on shares sold within a year is taxed at 20%; kept longer, small investors usually pay none (up to ₹1.25 lakh of gains a year).</div></div></details>
+    <p class="small muted center">Buy at the market opening (9:15 AM). Updated ${esc(ago(L.generated))}.${alertStatus() ? `<br>${alertStatus()}` : ""}</p>
     <div class="btns two"><button class="btn" data-goto="champions">🏆 Long-term picks</button><button class="btn" data-goto="settings">⚙️ Settings & help</button></div>`;
   el.innerHTML = html;
   for (const id of openIds) { const d = document.getElementById(id); if (d) d.open = true; }
@@ -1804,7 +1935,7 @@ function openMarkDialog(kind, sym) {
     const price = +$("#mp").value || x.price;
     const risk = x.price - x.stop;
     const my = myPositions();
-    my.push({ id: sym + "-" + Date.now(), symbol: sym, name: x.name, kind: kind,
+    my.push({ id: sym + "-" + Date.now(), symbol: sym, name: x.name, kind: kind, industry: x.industry || industryOf(sym),
       strategy: x.strategy, strategy_name: x.strategy_name, planId: x.planId,
       qty: +$("#mq").value || qty, price,
       stop: kind === "swing" ? +(price - risk).toFixed(2) : x.stop, target: null,
@@ -1832,7 +1963,7 @@ function myStocksBlock() {
       <div class="muted small">${esc(p.kind === "long_term" ? "Long-term" : "Short trade")} · ${num(p.qty, 0)} bought at ${px(p.price)} on ${esc(fmtDate(p.date))} · now ${s.now != null ? px(s.now) : "–"}</div>
       <p class="small" style="margin:8px 0 4px">${s.text}</p>
       ${s.stop ? `<div class="small muted">🛡 Safety price now ${px(s.stop)}${p.kind === "long_term" ? " (rises as the price rises)" : ""}${p.target ? ` · 🎯 Goal ${px(p.target)}` : ""}</div>` : ""}
-      ${holdPlanLine(p)}
+      ${s.action ? "" : holdPlanLine(p)}
       <div class="btns"><button class="btn small" data-sold="${esc(p.id)}">I sold it</button></div>
     </article>`).join("")}`;
 }
@@ -2131,7 +2262,8 @@ function openChampion(sym) {
 // ------------------------------------------------------------------ screen: long-term champions
 function marketBanner() {
   const r = S.latest?.market?.regime;
-  if (r === 0) return `<div class="callout bad">🔴 <b>The whole market is falling now.</b> Even the best shares fall in a crash. Wait until it turns 🟢 before buying.</div>`;
+  if (guardOut()) return `<div class="callout bad">🔴 <b>The whole market is falling now.</b> Even the best shares fall in a crash. Wait until the Nifty closes back above its 200-day average (My Plan will say so).</div>`;
+  if (r === 0) return `<div class="callout warn small">🟠 The market is weak (a little below its 200-day average). If you buy, buy in small parts.</div>`;
   if (r === 1) return `<div class="callout warn small">🟡 The market is unsure. If you buy, buy in small parts.</div>`;
   return "";
 }
@@ -2338,7 +2470,9 @@ function renderAll() {
   renderLongTerm();
   if (S.bt || $("#f-record")?.open) renderRecord();
   renderNews();
-  if (!$("#f-settings")?.open) renderSettings();
+  // redraw settings unless the reader is using one of its boxes (it may have opened before the data arrived)
+  const fs = $("#f-settings");
+  if (!fs?.open || !fs.contains(document.activeElement) || document.activeElement === fs.querySelector("summary")) renderSettings();
   $("#disclaimer").textContent = S.latest?.disclaimer || "";
   // champions screen: only redrawn when the market mood changes (keeps open sections open)
   if (S.champ && S.champRegime !== S.latest?.market?.regime) renderChampions();

@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-from . import ai_notes, backtest, champions, config, data, fundamentals, live_analysis, news, notify, tracker
+from . import (ai_notes, alerts, backtest, champions, config, data, fundamentals, live_analysis, longterm, news,
+               notify, tracker)
 from .strategies import SWING_STRATEGIES, Features, momentum_scores, pick_portfolio
 from .universe import load_nifty50, load_universe, nifty50_cached
 
@@ -235,75 +236,69 @@ def all_checks(x: dict, regime: int) -> dict:
     return {"business": business_ok, "price": price_ok, "news": news_ok, "market": regime >= 1}
 
 
-def safe_long_term(f: Features, uni: pd.DataFrame, use_fundamentals: bool, n: int = 5) -> list[dict]:
-    """Long-term ideas for a very cautious investor: the strongest Nifty 50
-    companies by steady 6/12-month momentum, in an uptrend, with no debt,
-    loss or valuation warnings."""
+def lt_checks(x: dict, guard_out: bool) -> dict:
+    """Checks for the long-term buy list. The price test is the one tested on 18 years (the share is among
+    the strongest risers, engine/longterm.py); business and news are extra safety checks on top."""
+    c = all_checks(x, 1)
+    return {"business": c["business"], "price": True, "news": c["news"], "market": not guard_out}
+
+
+def long_term_buy_list(f: Features, uni: pd.DataFrame, order: list[str], use_fundamentals: bool,
+                       n: int = 8) -> list[dict]:
+    """The strongest Nifty 50 shares (tested ranking), one per industry, without business warnings."""
     names = dict(zip(uni.symbol, uni.name))
     inds = dict(zip(uni.symbol, uni.industry))
-    sc = momentum_scores(f)
-    if sc.empty:
-        return []
-    big = [s for s in sc.index if bool(f.large.get(s, False))][: n + 10]
+    cands = order[: n + 10]
+    funda = fundamentals.fetch(cands) if (use_fundamentals and cands) else {}
     seen_ind: set[str] = set()
-    funda = fundamentals.fetch(big) if use_fundamentals else {}
     out = []
-    for s in big:
+    for rank, s in enumerate(cands, 1):
         pts, warn = fundamentals.quality_check(funda.get(s, {}))
         if warn or inds.get(s, "Other") in seen_ind:      # diversity: one company per industry
             continue
         seen_ind.add(inds.get(s, "Other"))
         price = float(f.close[s].iloc[-1])
         out.append({"symbol": s, "name": names.get(s, s), "industry": inds.get(s, ""), "kind": "long_term",
-                    "large": True, "price": r2(price),
-                    "trend": trend_facts(f, s),
+                    "large": True, "price": r2(price), "rank": rank, "trend": trend_facts(f, s),
                     # wide safety price against a one-company disaster (tight ones sold winners on ordinary dips)
                     "review_below": r2(price * (1 - config.HOLD_STOCK_TRAIL)),
-                    "ret_12m": r2(f.ret252[s].iloc[-1] * 100), "score": r2(sc.loc[s, "score"]),
-                    "fundamentals": funda.get(s, {})})
+                    "ret_12m": r2(f.ret252[s].iloc[-1] * 100), "fundamentals": funda.get(s, {})})
         if len(out) >= n:
             break
     return out
 
 
-def safe_midcaps(f: Features, uni: pd.DataFrame, regime: int, use_fundamentals: bool, n: int = 2) -> list[dict]:
-    """Mid-size companies (Nifty 200, not Nifty 50) ONLY when every strict check
-    passes: whole market rising, among the strongest steady risers, low price
-    swings, near the yearly high, and strong, low-debt, profitable business.
-    Small companies are never suggested (they are not even in the universe)."""
-    if regime != 2:
-        return []
-    names = dict(zip(uni.symbol, uni.name))
-    inds = dict(zip(uni.symbol, uni.industry))
-    sc = momentum_scores(f)
-    if sc.empty:
-        return []
-    cands = []
-    for s in list(sc.index[:25]):
-        if bool(f.large.get(s, False)):
-            continue
-        c, s50, s200 = float(f.close[s].iloc[-1]), float(f.sma50[s].iloc[-1]), float(f.sma200[s].iloc[-1])
-        vol = float(sc.loc[s, "vol"])
-        near_high = c >= 0.92 * float(f.high252[s].iloc[-1])
-        if c > s50 > s200 and vol < 0.28 and near_high:
-            cands.append(s)
-    funda = fundamentals.fetch(cands[:10]) if (use_fundamentals and cands) else {}
-    out = []
-    for s in cands:
-        fd = funda.get(s, {})
-        pts, warn = fundamentals.quality_check(fd)
-        strong = (fd.get("roe") or 0) >= 15 and (fd.get("debt_to_equity") if fd.get("debt_to_equity") is not None else 999) <= 50 \
-            and (fd.get("earnings_growth") or 0) > 10 and 0 < (fd.get("pe") or 999) < 50
-        if warn or not strong:
-            continue
-        price = float(f.close[s].iloc[-1])
-        out.append({"symbol": s, "name": names.get(s, s), "industry": inds.get(s, ""), "kind": "long_term",
-                    "size": "mid", "price": r2(price), "review_below": r2(max(float(f.sma50[s].iloc[-1]), price * 0.90)),
-                    "trend": trend_facts(f, s),
-                    "ret_12m": r2(f.ret252[s].iloc[-1] * 100), "fundamentals": fd})
-        if len(out) >= n:
-            break
-    return out
+def lt_signals(f: Features, guard: dict, review_day: str | None, keep: list[str], buy: list[dict],
+               funds: list[dict], prev: dict | None, last_date: str) -> dict:
+    """What a holder of the app's long-term suggestions should do (used by My Plan and the phone alerts).
+    The app knows the user's own shares and shows the exact status; the alerts say "if you own X"."""
+    log_ = longterm.update_log(longterm.load_log(), [x["symbol"] for x in buy[:config.LT_PICKS + 1]], last_date)
+    sells = []
+    for h in longterm.stop_hits(log_, f):
+        sells.append({**h, "name": h["symbol"], "why": f"it fell to its safety price (about ₹{h['stop']:,.0f}, "
+                                                       f"25% below its best price since the app suggested it)"})
+    prev_review = (((prev or {}).get("lt_signals") or {}).get("review") or {}).get("date")
+    new_review = bool(review_day and review_day != prev_review)
+    if new_review and not guard["out"]:
+        for sym, e in sorted(log_.items()):
+            if e.get("stopped") or e["from"] > review_day or sym in keep:
+                continue
+            sells.append({"symbol": sym, "name": sym, "why": "monthly review: no longer among the strongest. "
+                                                             "Use the money for the buy list"})
+    names = {x["symbol"]: x.get("name") or x["symbol"] for x in buy}
+    for s_ in sells:
+        s_["name"] = names.get(s_["symbol"], s_["name"])
+    longterm.save_log(log_)
+    idx = next((x for x in funds if x["symbol"] == "NIFTYBEES"), None)
+    plan_buy = [] if guard["out"] else ([idx] if idx else []) + buy[:config.LT_PICKS]
+    return {"guard": guard, "guard_turned_down": bool(guard["out"] and guard["changed"]),
+            "guard_turned_up": bool(not guard["out"] and guard["changed"]),
+            # the review covers the shares the method ranks (Nifty 50); other holdings keep only their safety price
+            "review": {"date": review_day, "keep": keep, "new": new_review,
+                       "universe": sorted(f.large[f.large].index)},
+            "buy": [{"symbol": x["symbol"], "name": x.get("name"), "max_entry": r2((x.get("price") or 0) * 1.02)}
+                    for x in plan_buy],
+            "sell": sells, "suggested": sorted(log_)}
 
 
 FUNDS = [("NIFTYBEES", "Nifty 50 index fund (ETF)", "Index fund: 50 big companies in one"),
@@ -312,9 +307,10 @@ FUNDS = [("NIFTYBEES", "Nifty 50 index fund (ETF)", "Index fund: 50 big companie
 
 def fund_info(demo: bool) -> list[dict]:
     """Exchange-traded funds for diversification (bought like a share on NSE)."""
+    trail = config.HOLD_FUND_TRAIL                     # None: sold only by the market guard
     if demo:
         return [{"symbol": s, "name": n, "type": t, "kind": "long_term", "size": "fund", "price": pr,
-                 "review_below": round(pr * (1 - config.HOLD_FUND_TRAIL), 2), "uptrend": True}
+                 "review_below": round(pr * (1 - trail), 2) if trail else None, "uptrend": True}
                 for (s, n, t), pr in zip(FUNDS, (285.0, 92.0))]
     try:
         p = data.load_yfinance([s for s, _, _ in FUNDS], period="2y")
@@ -332,7 +328,7 @@ def fund_info(demo: bool) -> list[dict]:
             continue
         price, sma200 = float(c.iloc[-1]), float(c.rolling(200).mean().iloc[-1])
         out.append({"symbol": s, "name": n, "type": t, "kind": "long_term", "size": "fund", "price": r2(price),
-                    "review_below": r2(price * (1 - config.HOLD_FUND_TRAIL)), "uptrend": price > sma200,
+                    "review_below": r2(price * (1 - trail)) if trail else None, "uptrend": price > sma200,
                     "ret_12m": r2((price / float(c.iloc[-253]) - 1) * 100) if len(c) > 253 else None})
     return out
 
@@ -353,8 +349,15 @@ def next_rebalance(today: pd.Timestamp) -> str:
 
 
 # ======================================================================= safe mode
-def safe_gate(stats: dict) -> tuple[bool, str]:
-    """Is a method reliable enough to recommend to a very cautious investor?"""
+def safe_gate(stats: dict, long: dict | None = None) -> tuple[bool, str]:
+    """Is a method reliable enough to recommend to a very cautious investor? `long` is the same method over
+    ~18 years (longtest.json): 5 good years can be luck, so when given it must hold up there too."""
+    if long is not None:
+        if not long.get("trades"):
+            return False, "Not yet checked on 18 years of prices"
+        if not long.get("ok"):
+            return False, (f"Over {long.get('years') or 18:.0f} years it lost money after charges "
+                           f"(average {long.get('avg_return')}% a trade); money in a liquid fund earned more")
     if not stats or not stats.get("trades"):
         return False, "Not tested yet"
     if stats["trades"] < config.SAFE_MIN_TRADES:
@@ -451,7 +454,15 @@ def run_full(args) -> None:
     f.set_large(load_nifty50())                       # blue chips for the safe method
     last_date = str(f.close.index[-1].date())
     mkt = market_summary(f, p)
-    log.info("Data: %s, last date %s, regime %s", p.source, last_date, mkt["regime_label"])
+    n50 = set(f.large[f.large].index)
+    guard = longterm.guard_state(f.ix)                 # sell-everything rule for long-term holdings
+    mkt["guard"] = guard
+    try:
+        prev_latest = json.loads((config.OUT_DIR / "latest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        prev_latest = None
+    log.info("Data: %s, last date %s, regime %s, guard %s", p.source, last_date, mkt["regime_label"],
+             "OUT" if guard["out"] else "in")
 
     # ---- backtests
     bt = {}
@@ -474,17 +485,18 @@ def run_full(args) -> None:
                          {k: bt[st.key]["portfolio"].get(k) for k in ("trades", "win_rate", "total_profit",
                                                                     "per_year_profit", "worst_drop_pct")})
         inds = dict(zip(uni.symbol, uni.industry))
-        outcomes = backtest.holding_outcomes(f, inds, set(f.large[f.large].index))
+        # what past holdings of the suggested kind did after ~6 and ~12 months, with the app's selling rules
+        outcomes = backtest.holding_outcomes(f, inds, n50, guard_out=longterm.guard_series(f.ix).to_numpy())
         log.info("holding outcomes: stock 6m %s | 12m %s", outcomes["stock"].get("6m"), outcomes["stock"].get("12m"))
         lt = backtest.backtest_momentum(f, inds)
         lt_guard = backtest.backtest_momentum(f, inds, trend_guard=True)
-        # the app's actual long-term suggestions: Nifty 50 only, 4 stocks, one per sector
-        # (price-based parts only; past business data and news are not available for a backtest)
-        n50 = set(f.large[f.large].index)
-        # tested recipe: 1/3 Nifty 50 index fund + 3 stocks (one per sector) + full market guard
-        lt_app = backtest.backtest_momentum(f, inds, n=3, universe=n50, max_per_industry=1,
-                                            index_weight=1 / 3, trend_guard=True, guard_frac=1.0)
-        log.info("backtest app long-term (N50, 4 stocks): cagr %s, worst %s", lt_app.get("cagr"), lt_app.get("max_drawdown"))
+        # My Plan's long-term method (engine/longterm.py), simulated day by day exactly as in the 18-year study
+        try:
+            lt_app = longterm.app_backtest(p, uni, n50)
+        except Exception as exc:                        # a test must never stop the daily plan
+            log.warning("long-term backtest failed: %s", exc)
+            lt_app = {}
+        log.info("backtest app long-term: cagr %s, worst %s", lt_app.get("cagr"), lt_app.get("max_drawdown"))
         log.info("backtest momentum cagr %s vs nifty %s, guarded %s", lt.get("cagr"),
                  lt.get("bench_cagr"), lt_guard.get("cagr"))
         write_json("backtest.json", {
@@ -517,8 +529,14 @@ def run_full(args) -> None:
     snaps = tr.get("portfolio_snapshots", [])
     prev = list(snaps[-1]["holdings"].keys()) if snaps else []
     lt_picks, changes = long_term_picks(f, uni, prev, use_fundamentals=not args.demo)
-    lt_safe = safe_long_term(f, uni, use_fundamentals=not args.demo, n=8)
-    mid_safe = safe_midcaps(f, uni, mkt["regime"], use_fundamentals=not args.demo)
+    # the long-term plan (rules tested on 18 years, engine/longterm.py): today's ranking, and the month-end review
+    order = longterm.ranking(f, n50)
+    ri = longterm.review_index(f.close.index)
+    review_day = str(f.close.index[ri].date()) if ri >= 0 else None
+    keep = longterm.ranking(f, n50, at=ri)[: config.LT_KEEP_TOP] if ri >= 0 else []
+    lt_safe = long_term_buy_list(f, uni, order, use_fundamentals=not args.demo)
+    # mid-size companies are not part of the tested method (more risk, and the monthly review is Nifty 50)
+    mid_safe: list[dict] = []
     funds = fund_info(args.demo)
 
     # ---- fundamentals for swing picks (light), news for everything shown
@@ -535,12 +553,13 @@ def run_full(args) -> None:
         x["news"] = n.get("items", [])
         x["news_sentiment"] = n.get("sentiment", 0.0)
         x["red_flags"] = n.get("red_flags", [])
-    for lst in (lt_safe, mid_safe):
-        for x in lst:
-            x["checks"] = all_checks(x, mkt["regime"])
+    for x in lt_safe:
+        x["checks"] = lt_checks(x, guard["out"])
+    for x in mid_safe:
+        x["checks"] = all_checks(x, mkt["regime"])
     lt_safe = [x for x in lt_safe if all(x["checks"].values())]
     mid_safe = [x for x in mid_safe if all(x["checks"].values())]
-    log.info("all-positive picks: %d large, %d mid", len(lt_safe), len(mid_safe))
+    log.info("all-positive picks: %d large, %d mid; review %s keeps %s", len(lt_safe), len(mid_safe), review_day, keep)
     for pk in picks:
         score_swing(pk, mkt["regime"])
     picks.sort(key=lambda x: x["score"], reverse=True)
@@ -549,7 +568,8 @@ def run_full(args) -> None:
     events = tracker.update_eod(tr, f)
     active = [t for t in tr["trades"] if t["status"] in ("pending", "open", "selling")]
 
-    safe = {k: safe_gate(bt.get(k, {})) for k in config.SAFE_STRATEGIES}
+    long_short = longterm.load_long_test().get("short_term") or {}
+    safe = {k: safe_gate(bt.get(k, {}), long_short if not args.demo else None) for k in config.SAFE_STRATEGIES}
     if config.SAFE_MODE:
         # very low risk: only reliable blue-chip setups, affordable with the trade amount,
         # no bad news, never more than MAX_OPEN_TRADES at once, one new trade per day
@@ -589,6 +609,8 @@ def run_full(args) -> None:
     # ---- open positions view (from track record) and tomorrow's plan
     open_trades = [t for t in tr["trades"] if t["status"] in ("open", "pending", "selling")]
     plan = build_plan(tr, last_date, bt)
+    lt_buy = [x for x in lt_safe if not x.get("red_flags")]
+    signals = lt_signals(f, guard, review_day, keep, lt_buy, funds, prev_latest, last_date)
 
     latest = {
         "generated": datetime.now(timezone.utc).isoformat(),
@@ -600,7 +622,11 @@ def run_full(args) -> None:
                       "live_performance": perf, "size": config.LT_PORTFOLIO_SIZE},
         "open_trades": open_trades,
         "plan": plan,
-        "long_term_safe": [x for x in lt_safe if not x.get("red_flags")],
+        "long_term_safe": lt_buy,
+        "lt_signals": signals,
+        # the last close of every share and fund, so the app can value any holding when no live price is fresh
+        "closes": {**{s: r2(c.iloc[-1]) for s, c in ((s, f.close[s].dropna()) for s in f.close.columns) if len(c)},
+                   **{x["symbol"]: x["price"] for x in funds if x.get("price")}},
         "mid_safe": [x for x in mid_safe if not x.get("red_flags")],
         "funds": funds,
         "expect": {"holding": outcomes, "cost_pct": round(config.ROUND_TRIP_COST * 100, 2)},
@@ -637,14 +663,15 @@ def run_full(args) -> None:
     write_json("market_news.json", {"generated": latest["generated"], "items": mkt_news})
     write_json("live.json", live_analysis.empty_snapshot(latest["generated"]))
 
-    # ---- alerts
+    # ---- alerts (engine/alerts.py): every weekday evening the plan for the next day, quiet days included
     if config.SAFE_MODE:
-        # results of finished trades + tomorrow's plan, in plain words; silent if nothing to do
         results = [notify.format_event(e) for e in events if e["type"] in ("sold", "stop", "target", "expired")]
-        body = plan_message(plan, "tomorrow")
-        msg = "\n".join(results + ([""] if results and body else []) + ([body] if body else []))
-        if msg.strip() and not args.demo:
-            notify.send("Plan for tomorrow" if body else "Trade update", msg)
+        if not args.demo:
+            try:
+                alerts.maybe_send_welcome()
+                alerts.maybe_send_evening(latest, prev_latest, results, plan_message(plan, "tomorrow"))
+            except Exception as exc:                    # an alert problem must never lose the day's data
+                log.warning("alerts failed: %s", exc)
     else:
         lines = [notify.format_event(e) for e in events]
         if actionable:
@@ -744,13 +771,17 @@ def run_morning(args) -> None:
         return
     if config.SAFE_MODE:
         plan = latest.get("plan") or {"buy": [], "sell": [], "hold": []}
-        body = plan_message(plan, "today")
-        if not (plan["buy"] or plan["sell"]):
-            log.info("Nothing to buy or sell today - no reminder sent")
+        msg = alerts.morning(latest, plan_message(plan, "today"))
+        if not msg:
+            log.info("Nothing to buy or sell at the opening - no reminder sent")
             return
-        log.info("morning reminder:\n%s", body)
-        if not args.demo:
-            notify.send("Today's plan (market opens 9:15 AM)", body)
+        if notify.state().get("morning_for") == latest["data_date"]:
+            log.info("Morning reminder already sent")
+            return
+        log.info("morning reminder:\n%s", msg[1])
+        if not args.demo and any(r.get("ok") for r in notify.send(msg[0], msg[1], "high", kind="morning",
+                                                                   tags=["alarm_clock"])):
+            notify.set_state(morning_for=latest["data_date"])
         return
     tr = tracker.load()
     pending = [t for t in tr["trades"] if t["status"] == "pending"]

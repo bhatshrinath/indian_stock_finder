@@ -686,3 +686,96 @@ def test_review_happens_at_month_end():
     assert longterm.review_index(d) == len(d) - 1
     d2 = pd.bdate_range("2026-10-20", "2026-11-13")
     assert d2[longterm.review_index(d2)] == pd.Timestamp("2026-10-30")
+
+
+# ---------------------------------------------------------------- alert schedule (engine/alerts.py)
+def _latest(day="2026-11-13", regime=1, buy=True, sell=(), out=False, turned_down=False, turned_up=False,
+            below_avg=False):
+    return {"data_date": day, "market": {"regime": regime, "nifty": 25299.35, "nifty_change_pct": 0.4},
+            "lt_signals": {"buy": [{"symbol": "NIFTYBEES", "name": "Nifty 50 index fund (ETF)", "max_entry": 292.5},
+                                   {"symbol": "TECHM", "name": "Tech Mahindra Ltd.", "max_entry": 1650.2}] if buy else [],
+                           "sell": list(sell), "guard": {"out": out, "below_avg": below_avg, "sell_below": 23272.4,
+                                                         "buy_above": 23992.2},
+                           "guard_turned_down": turned_down, "guard_turned_up": turned_up}}
+
+
+def test_evening_plan_is_sent_once_after_the_close(monkeypatch, tmp_path):
+    from engine import alerts, notify
+    _alert_env(monkeypatch, tmp_path)
+    sent = []
+    monkeypatch.setattr(notify.requests, "post", lambda url, json=None, timeout=None, **k: sent.append(json) or _Resp())
+    fri = lambda h, m: datetime(2026, 11, 13, h, m)
+    assert not alerts.maybe_send_evening(_latest(), None, [], "", now=fri(12, 0))       # during the day: not yet
+    assert alerts.maybe_send_evening(_latest(), None, [], "", now=fri(16, 25))
+    assert not alerts.maybe_send_evening(_latest(), None, [], "", now=fri(16, 45))      # once per market day
+    assert len(sent) == 1
+    m = sent[0]
+    assert m["title"] == "Plan for Mon 16 Nov: nothing to sell ✅" and m["priority"] == 3
+    assert "TECHM" in m["message"] and "up to ₹1,650" in m["message"] and "Nifty 25,299" in m["message"]
+    assert not alerts.maybe_send_evening(_latest("2026-11-12"), None, [], "", now=fri(17, 0))   # stale data: no
+    assert not alerts.maybe_send_evening(_latest("2026-11-16"), None, [], "", now=datetime(2026, 11, 16, 22, 30))  # night
+
+
+def test_evening_plan_puts_sells_first(monkeypatch, tmp_path):
+    from engine import alerts
+    t, body, prio = alerts.evening(_latest(regime=0, out=True, turned_down=True), None, [], "")
+    assert t.startswith("⚠️ Sell at 9:15 AM Mon 16 Nov") and prio == "high"
+    assert body.startswith("💰 If you own these, sell") and "turned down" in body and "🛒" not in body
+    assert "🔴 Market falling" in body
+    t, body, prio = alerts.evening(_latest(regime=0, out=True), None, [], "")    # still out: no new sell, no buys
+    assert prio == "default" and "Buy nothing new" in body and "23,992" in body and "🛒" not in body
+    stop = {"symbol": "TECHM", "name": "Tech Mahindra Ltd.", "why": "it fell to its safety price"}
+    t, body, prio = alerts.evening(_latest(sell=[stop]), None, [], "")
+    assert prio == "high" and "Tech Mahindra (TECHM): it fell to its safety price" in body
+    t, body, prio = alerts.evening(_latest(turned_up=True), None, [], "")
+    assert "buying is allowed again" in body and prio == "default" and "🛒" in body
+    t, body, prio = alerts.evening(_latest(regime=0, below_avg=True), None, [], "")   # dipped, guard not hit
+    assert "🟠 Market weak" in body and "Keep holding" in body and "23,272" in body and prio == "default"
+
+
+def test_morning_reminder_only_when_something_is_due():
+    from engine import alerts
+    assert alerts.morning(_latest(), "") is None                                      # nothing to do at the opening
+    t, body = alerts.morning(_latest(regime=0, buy=False, out=True, turned_down=True), "")
+    assert t == "Today at 9:15 AM" and "Sell your long-term shares" in body
+    t, body = alerts.morning(_latest(), "🛒 BUY today at 9:15 AM:\n• 10 shares of ITC")
+    assert "ITC" in body
+
+
+def test_welcome_note_goes_out_once(monkeypatch, tmp_path):
+    from engine import alerts, notify
+    _alert_env(monkeypatch, tmp_path)
+    sent = []
+    monkeypatch.setattr(notify.requests, "post", lambda url, json=None, timeout=None, **k: sent.append(json) or _Resp())
+    assert not alerts.maybe_send_welcome(now=datetime(2026, 11, 13, 23, 0))          # never at night
+    assert alerts.maybe_send_welcome(now=datetime(2026, 11, 13, 12, 0))
+    assert not alerts.maybe_send_welcome(now=datetime(2026, 11, 13, 12, 5))
+    assert len(sent) == 1 and "4:30 PM" in sent[0]["message"]
+
+
+def test_if_you_own_it_sells_follow_the_app_rules(monkeypatch, tmp_path):
+    """Stop hits since a share was first suggested, and month-end review drop-outs, become "if you own X" sells."""
+    from engine import longterm
+    from engine.run import lt_signals
+    monkeypatch.setattr(config, "OUT_DIR", tmp_path)
+    f = Features(random_walk_prices(seed=3, days=400))
+    d = [str(x.date()) for x in f.close.index]
+    a, b = SYMS[0], SYMS[1]
+    guard = {"out": False, "changed": False}
+    buy = [{"symbol": a, "name": "Alpha Ltd.", "price": 100.0}, {"symbol": b, "name": "Beta Ltd.", "price": 50.0}]
+    longterm.save_log(longterm.update_log({}, [a, b], d[300]))           # both suggested 100 days ago
+    hi = float(f.close[a].loc[d[300]:].max())
+    f.close.loc[f.close.index[-1], a] = hi * 0.70                         # A now 30% below its best since then
+    s = lt_signals(f, guard, d[380], keep=[a], buy=buy, funds=[], prev={"lt_signals": {"review": {"date": d[350]}}},
+                   last_date=d[-1])
+    why = {x["symbol"]: x["why"] for x in s["sell"]}
+    assert "safety price" in why[a] and "monthly review" in why[b]
+    assert s["review"]["new"] and s["buy"][0]["symbol"] == a and s["buy"][0]["max_entry"] == 102.0
+    assert a in s["review"]["universe"] and b in s["review"]["universe"]     # the app reviews only these
+    # the next evening: nothing new to report (the stop was already reported, the review is not new)
+    s2 = lt_signals(f, guard, d[380], keep=[a], buy=buy, funds=[], prev={"lt_signals": s}, last_date=d[-1])
+    assert s2["sell"] == []
+    # market guard out: nothing to buy, and the review is not used to swap shares
+    s3 = lt_signals(f, {"out": True, "changed": True}, d[390], keep=[], buy=buy,
+                    funds=[{"symbol": "NIFTYBEES", "price": 280.0}], prev={"lt_signals": s}, last_date=d[-1])
+    assert s3["buy"] == [] and s3["guard_turned_down"] and not any("monthly" in x["why"] for x in s3["sell"])

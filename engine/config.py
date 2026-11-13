@@ -76,7 +76,7 @@ ROUND_TRIP_COST = BASE_COST + DP_CHARGE_RS / TRADE_AMOUNT
 # Safety price that rises with the price (fraction below the highest close; None = no such rule),
 # and the monthly "is it still among the strongest?" check. Chosen from the study in engine/research.py.
 HOLD_STOCK_TRAIL = 0.25   # wide: tight stops (12%) sold winners on ordinary dips (study, real data)
-HOLD_FUND_TRAIL = 0.10
+HOLD_FUND_TRAIL = None    # the index fund is sold only by the market guard below (as tested on 18 years)
 HOLD_MONTHLY_CHECK = False
 
 # Market guard for long-term holdings (engine/study.py, 18 years of real prices): sell everything only when
@@ -85,7 +85,7 @@ HOLD_MONTHLY_CHECK = False
 # again: on 18 years it cut the yearly return by several points and still allowed a bigger worst fall.
 GUARD_BAND = 0.03
 LT_PICKS = 3              # long-term shares bought (one per industry), next to the index fund
-LT_KEEP_TOP = 6           # monthly review: keep a share while it ranks in this many (fewer needless swaps)
+LT_KEEP_TOP = 9           # monthly review: keep a share while it ranks in the top 9 (fewer swaps: less tax, smaller falls)
 
 # ---------------------------------------------------------------- alerts/AI (optional)
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
