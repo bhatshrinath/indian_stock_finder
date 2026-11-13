@@ -567,3 +567,50 @@ def test_falling_little_counts_even_if_recovery_is_slow():
     assert r["crashes"][0][1] > c["months"]                # slower to get back than the Nifty
     assert r["crashes"][0][0] > 0.5 * c["fall"]           # but fell far less
     assert r["signs"]["bounce"]
+
+
+# ---------------------------------------------------------------- long-history strategy study (engine/study.py)
+def _study_ctx(days=1600, n=24, cut=None):
+    from engine import study
+    syms = [f"S{i:02d}" for i in range(n)]
+    p = data.load_demo(syms, days=days, seed=5)
+    if cut is not None:
+        p = data.Prices(*(x.loc[:cut] for x in (p.open, p.high, p.low, p.close, p.volume)),
+                        p.index_close.loc[:cut], p.index_high.loc[:cut], p.index_low.loc[:cut], source=p.source)
+    uni = pd.DataFrame({"symbol": syms, "name": syms, "industry": [f"I{i % 6}" for i in range(n)]})
+    return study.Ctx(p, None, uni, set(syms[:12]))
+
+
+def test_study_index_only_tracks_the_index():
+    from engine import study
+    ctx = _study_ctx()
+    eq, closed, _ = study.simulate(ctx, study.Variant("idx", n=0, index_w=1.0, guard="none", trail=None))
+    s = ctx.start
+    years = (ctx.dates[-1] - ctx.dates[s]).days / 365.25
+    expect = ctx.ix[-1] / ctx.ixo[s + 1] * (1 - study.IDX_COST) * (1 + study.IDX_DIV / 252) ** (len(ctx.dates) - s - 1)
+    assert closed == [] and abs(eq[-1] / expect - 1) < 0.02, (eq[-1], expect, years)
+
+
+def test_study_guard_and_stops_keep_money_safe():
+    from engine import study
+    ctx = _study_ctx()
+    v = study.Variant("g", universe="n200", rank="quality", trend=True, hold_rule="quality")
+    eq, closed, _ = study.simulate(ctx, v)
+    assert np.isfinite(eq[ctx.start:]).all() and (eq[ctx.start:] > 0).all()
+    out = ctx.guard["g1"]
+    # while the guard says "out" for 3+ days in a row, nothing but cash is held (value grows only by interest)
+    for i in range(ctx.start + 3, len(eq)):
+        if out[i - 3:i + 1].all():
+            assert eq[i] / eq[i - 1] - 1 == pytest.approx(study.CASH_YIELD / 252, abs=1e-9)
+
+
+def test_study_quality_never_peeks_at_the_future():
+    ctx = _study_ctx()
+    cut = ctx.dates[1200]
+    early = _study_ctx(cut=cut)
+    i = int(np.flatnonzero(early.is_me)[-2])            # a month end well before the cut
+    a, b = ctx.quality(i, ctx.all), early.quality(i, early.all)
+    assert (a is None) == (b is None)
+    if a is not None:
+        np.testing.assert_allclose(a[0], b[0], equal_nan=True)
+        assert (a[1] == b[1]).all()

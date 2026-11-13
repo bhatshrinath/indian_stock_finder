@@ -22,6 +22,11 @@ jobs:
       - name: Safe-strategy robustness study on real data (visible as a note on the run page)
         continue-on-error: true
         run: python -m engine.research
+      - name: Long-history strategy study, ~18 years (only when the commit message contains [study])
+        if: contains(github.event.head_commit.message, '[study]')
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python -m engine.study
       - name: End-to-end run on synthetic data
         run: python -m engine.run --mode full --demo --no-news
       - name: Long-term champions study on synthetic data
