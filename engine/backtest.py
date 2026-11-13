@@ -212,11 +212,12 @@ def portfolio_sim(f: Features, strat: SwingStrategy, money: float, slots: int = 
     eq = pd.concat([pd.Series([money]), df.groupby("exit_date")["gain"].sum().cumsum() + money],
                    ignore_index=True)
     wins = df.gain > 0
+    growth = 1 + total / money                       # can be <= 0: losses added up to more than the money
     return {
         "money": money, "slots": slots, "years": round(years, 1), "trades": int(len(df)),
         "trades_per_year": round(len(df) / years, 1), "win_rate": round(100 * float(wins.mean()), 1),
         "total_profit": round(total), "per_year_profit": round(total / years),
-        "cagr_pct": round(100 * ((1 + total / money) ** (1 / years) - 1), 1),
+        "cagr_pct": round(100 * (growth ** (1 / years) - 1), 1) if growth > 0 else -100.0,
         "worst_drop_pct": round(float((eq / eq.cummax() - 1).min() * 100), 1),
         "worst_drop_rs": round(float((eq - eq.cummax()).min())),
         "avg_win_rs": round(float(df.gain[wins].mean())) if wins.any() else 0,

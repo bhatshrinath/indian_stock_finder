@@ -646,3 +646,43 @@ def test_study_quality_never_peeks_at_the_future():
     if a is not None:
         np.testing.assert_allclose(a[0], b[0], equal_nan=True)
         assert (a[1] == b[1]).all()
+
+
+# ---------------------------------------------------------------- long-term plan (engine/longterm.py)
+def test_longterm_ranking_is_exactly_what_the_study_tested():
+    from engine import longterm, study
+    syms = [f"S{i:02d}" for i in range(24)]
+    p = data.load_demo(syms, days=900, seed=5)
+    uni = pd.DataFrame({"symbol": syms, "name": syms, "industry": [f"I{i % 6}" for i in range(24)]})
+    n50 = set(syms[:12])
+    ctx = study.Ctx(p, None, uni, n50)
+    f = Features(p)
+    for i in (400, 650, len(p.close) - 1):
+        order, _ = ctx.candidates(study.Variant("x", universe="n50"), i)
+        assert longterm.ranking(f, n50, at=i) == [ctx.syms[k] for k in order]
+
+
+def test_guard_waits_for_a_clear_break_and_a_clear_recovery():
+    from engine import longterm
+    idx = pd.bdate_range("2020-01-01", periods=400)
+    up = np.linspace(100, 150, 300)
+    path = np.concatenate([up, [149] * 20, np.linspace(149, 120, 40), np.linspace(120, 160, 40)])
+    ix = pd.Series(path, index=idx)
+    g = longterm.guard_series(ix, band=0.03)
+    s200 = ix.rolling(200, min_periods=190).mean()
+    first_out = g.idxmax()
+    assert ix[first_out] < 0.97 * s200[first_out]                      # out only 3% below the average
+    before = g.loc[:first_out].iloc[:-1]
+    assert not before.any() and ((ix < s200) & ~g).any()               # a small dip under the average is ignored
+    back = g.loc[first_out:][~g.loc[first_out:]].index[0]
+    assert ix[back] >= s200[back]                                      # back in only above the average
+    st = longterm.guard_state(ix)
+    assert st["out"] is False and st["sell_below"] == pytest.approx(0.97 * s200.iloc[-1], abs=0.01)
+
+
+def test_review_happens_at_month_end():
+    from engine import longterm
+    d = pd.bdate_range("2026-10-20", "2026-11-30")                  # Mon 30 Nov is the month's last weekday
+    assert longterm.review_index(d) == len(d) - 1
+    d2 = pd.bdate_range("2026-10-20", "2026-11-13")
+    assert d2[longterm.review_index(d2)] == pd.Timestamp("2026-10-30")

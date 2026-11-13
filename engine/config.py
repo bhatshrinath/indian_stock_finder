@@ -79,6 +79,14 @@ HOLD_STOCK_TRAIL = 0.25   # wide: tight stops (12%) sold winners on ordinary dip
 HOLD_FUND_TRAIL = 0.10
 HOLD_MONTHLY_CHECK = False
 
+# Market guard for long-term holdings (engine/study.py, 18 years of real prices): sell everything only when
+# the Nifty closes GUARD_BAND below its 200-day average, buy again once it closes back above the average.
+# Selling at the first close below the average (the old rule) sold low and bought back higher again and
+# again: on 18 years it cut the yearly return by several points and still allowed a bigger worst fall.
+GUARD_BAND = 0.03
+LT_PICKS = 3              # long-term shares bought (one per industry), next to the index fund
+LT_KEEP_TOP = 6           # monthly review: keep a share while it ranks in this many (fewer needless swaps)
+
 # ---------------------------------------------------------------- alerts/AI (optional)
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")

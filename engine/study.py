@@ -489,36 +489,21 @@ def note(title: str, rows: list[str]) -> None:
 
 
 # ======================================================================= the studies
-C_ = dict(guard="g2")                                       # round 2: the current method with the slower guard
+# Round 3: the proposed method R = the current one with the slower guard (out 3% below the 200-day average,
+# back above it) and fewer swaps (keep a share while it ranks in the top 9). Rounds 1-2 are in git history.
+R_ = dict(guard="g2", hold_mult=3.0)
 LT_VARIANTS = [
     Variant("A NOW N50 momentum, 3 + 1/3 index, guard, 25% stop"),
-    Variant("B NOW without guard", guard="none"),
-    Variant("C NOW slower guard (out 3% below, back above)", **C_),
-    # how sensitive is the slower guard to its settings?
-    Variant("C2 guard band 2%", guard="g2:0.02"),
-    Variant("C5 guard band 5%", guard="g2:0.05"),
-    Variant("CM guard checked at month ends only", guard="gm"),
-    # no hindsight: the 50 most traded shares at that time instead of today's Nifty 50
-    Variant("T1 Top-50 traded momentum, guard", universe="top50"),
-    Variant("T2 Top-50 traded momentum, slower guard", universe="top50", **C_),
-    Variant("T3 Top-50 traded momentum, no guard", universe="top50", guard="none"),
-    Variant("T4 Top-100 traded momentum, slower guard", universe="top100", **C_),
-    Variant("T5 Top-100 traded, quality filter, slower guard", universe="top100", filt="quality", **C_),
-    # fewer swaps (less tax), stop width, index part, number of shares
-    Variant("H3 C, keep while in top 9", hold_mult=3.0, **C_),
-    Variant("H4 C, keep while in top 12", hold_mult=4.0, **C_),
-    Variant("S20 C, 20% stop", trail=0.20, **C_),
-    Variant("S00 C, no stop", trail=None, **C_),
-    Variant("X50 C, 1/2 in the index fund", index_w=0.5, **C_),
-    Variant("X0 C, no index fund", index_w=0.0, **C_),
-    Variant("N5 C, 5 shares", n=5, **C_),
-    Variant("Q50 C, Nifty 50 with quality filter", filt="quality", **C_),
+    Variant("R NEW: slower guard, keep while in top 9", **R_),
+    Variant("R5 R with a 5% guard band", **{**R_, "guard": "g2:0.05"}),
+    Variant("RT50 R on the 50 most traded then (no hindsight)", universe="top50", **R_),
+    Variant("RT100 R on the 100 most traded then", universe="top100", **R_),
+    Variant("RX50 R with 1/2 in the index fund", index_w=0.5, **R_),
+    Variant("RS0 R without the 25% stop", trail=None, **R_),
     Variant("H Champions in uptrend N200, no guard", universe="n200", rank="quality", trend=True, hold_rule="quality", guard="none"),
 ]
 BENCH = [Variant("Z1 Nifty 50 index fund, held", n=0, index_w=1.0, guard="none", trail=None),
-         Variant("Z2 Index fund + guard", n=0, index_w=1.0, guard="g1", trail=None),
-         Variant("Z3 Index fund + slower guard", n=0, index_w=1.0, guard="g2", trail=None),
-         Variant("Z4 Index fund + month-end guard", n=0, index_w=1.0, guard="gm", trail=None)]
+         Variant("Z3 Index fund + slower guard", n=0, index_w=1.0, guard="g2", trail=None)]
 
 
 def long_term(ctx: Ctx) -> list[list[str]]:
@@ -531,11 +516,11 @@ def long_term(ctx: Ctx) -> list[list[str]]:
     head = [f"LONG TERM, real prices {ctx.dates[ctx.start].date()}..{ctx.dates[-1].date()}, {ctx.K} shares "
             f"(N50 {int(ctx.n50.sum())}); costs {COST * 200:.1f}% a round trip, cash {CASH_YIELD:.0%}/yr, Nifty + {IDX_DIV:.1%} dividends"]
     group = lambda *keys: [line(n, s) for n, (v, s) in res.items() if n.split(" ")[0] in keys]
-    rows1 = head + group("Z1", "Z2", "Z3", "Z4", "A", "B", "C")
-    rows2 = group("C2", "C5", "CM", "T1", "T2", "T3", "T4", "T5")
-    rows2b = group("H3", "H4", "S20", "S00", "X50", "X0", "N5", "Q50", "H")
+    rows1 = head + group("Z1", "Z3", "A", "R")
+    rows2 = group("R5", "RT50", "RT100")
+    rows2b = group("RX50", "RS0", "H")
     rows3 = ["AFTER TAX (20% on gains from anything sold within a year; long-term gains assumed under the tax-free limit)"]
-    for key in ("Z1", "Z3", "A", "B", "C", "CM", "T2", "T3", "H3", "H4", "X50", "H"):
+    for key in ("Z1", "Z3", "A", "R", "RT50", "RT100", "RX50", "H"):
         v = next((v for n, (v, s) in res.items() if n.split(" ")[0] == key), None)
         if v is None:
             continue
@@ -545,8 +530,7 @@ def long_term(ctx: Ctx) -> list[list[str]]:
                      f"worst fall {pct(s['maxdd'])}")
     rows4 = ["YEARS (% return): " + " ".join(str(y)[2:] for y in sorted(res[LT_VARIANTS[0].name][1]["yearly"]))]
     for n, (v, s) in res.items():
-        if n.split(" ")[0] in ("Z1", "Z3", "A", "B", "C", "CM", "T1", "T2", "T3", "T4", "H3", "X50", "H"):
-            rows4.append(f"{n.split(' ')[0]}: " + " ".join(f"{100 * r:+.0f}" for _, r in sorted(s["yearly"].items())))
+        rows4.append(f"{n.split(' ')[0]}: " + " ".join(f"{100 * r:+.0f}" for _, r in sorted(s["yearly"].items())))
     return [rows1, rows2, rows2b, rows3, rows4]
 
 
