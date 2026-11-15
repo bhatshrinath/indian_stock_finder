@@ -798,3 +798,31 @@ def test_a_missing_latest_day_never_means_a_zero_price(monkeypatch, tmp_path):
     s = lt_signals(f, {"out": False, "changed": False}, None, [], buy + [{"symbol": "ZERO", "price": None}],
                    [{"symbol": "NIFTYBEES", "price": 280.0}], None, str(f.close.index[-1].date()))
     assert all(b["max_entry"] > 0 for b in s["buy"]) and "ZERO" not in [b["symbol"] for b in s["buy"]]
+
+
+def test_public_alert_log_never_holds_a_secret(monkeypatch, tmp_path):
+    """alerts.json is published with the site: tokens, topics and e-mail addresses must never reach it."""
+    import requests as rq
+    from engine import notify
+    monkeypatch.setattr(config, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(config, "NTFY_TOPIC", "")
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "123456789:AAH-secretTokenValue_xyz")
+    monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "987654321")
+    monkeypatch.setattr(config, "SMTP_USER", "someone.private@example.com")
+    monkeypatch.setattr(config, "SMTP_PASSWORD", "app-password-1234")
+    monkeypatch.setattr(config, "ALERT_EMAIL_TO", "father.private@example.com")
+
+    def boom(url, json=None, timeout=None, **k):            # like requests: the URL (with the token) is in the text
+        raise rq.ConnectionError(f"Max retries exceeded with url: {url} chat {json['chat_id']}")
+    monkeypatch.setattr(notify.requests, "post", boom)
+
+    class FailingSMTP:
+        def __init__(self, *a, **k):
+            raise OSError("550 mailbox unavailable: father.private@example.com (user someone.private@example.com)")
+    monkeypatch.setattr(notify.smtplib, "SMTP_SSL", FailingSMTP)
+    res = notify.send("Plan", "Body")
+    assert [r["ok"] for r in res] == [False, False]
+    published = (tmp_path / "alerts.json").read_text(encoding="utf-8")
+    for secret in ("AAH-secretTokenValue_xyz", "123456789:", "987654321", "private@example.com", "app-password-1234"):
+        assert secret not in published, secret
+    assert "***" in published and notify.redact("x" * 500) == "x" * 160

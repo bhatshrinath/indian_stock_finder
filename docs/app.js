@@ -1012,6 +1012,15 @@ function renderSettings() {
           ${alertDetails()}` : ""}</div></div>
       <div class="btns two"><button class="btn primary" id="s-protect-save">Save</button><button class="btn" id="s-notify">${notifyOn ? "Turn alerts off" : "Turn alerts on"}</button></div>
     </div>
+    <h2>🔒 Your details</h2>
+    <div class="card small">
+      <p style="margin-top:0">Your money amount and <b>My stocks</b> are kept <b>only on this phone</b>. They are never sent anywhere,
+        so nobody else can see them, and nothing is stored online (that is also why it costs nothing).</p>
+      <p>Keep a copy, in case the phone is changed or its browser data is cleared:</p>
+      <div class="btns two"><button class="btn" id="s-backup">💾 Save a backup</button><label class="btn" for="s-restore" role="button" tabindex="0">📂 Restore</label></div>
+      <input id="s-restore" type="file" accept=".json,application/json,text/plain" hidden>
+      <p class="muted" style="margin-bottom:0">${myPositions().length} stock${myPositions().length === 1 ? "" : "s"} saved on this phone. Each phone keeps its own list.</p>
+    </div>
     <h2>❓ How to use</h2>
     <div class="card"><ol class="stepper">
       <li>Open <b>My Plan</b> and set <b>money I have today</b>.</li>
@@ -1054,6 +1063,53 @@ function renderSettings() {
   };
   $("#s-reload").onclick = () => loadAll();
   $("#s-clear").onclick = () => { if (confirm("Remove all your recorded stocks from this device?")) { store.set(LS.my, []); renderAll(); } };
+  $("#s-backup").onclick = () => backupMyStocks();
+  $("#s-restore").onchange = (e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) restoreMyStocks(f); };
+}
+
+// ------------------------------------------------------------------ backup of what is stored on this phone
+// Settings and My Stocks live only in this browser (localStorage). A backup is a small file the user keeps
+// (Files, Drive, or a message to themselves); nothing is ever uploaded by the app.
+async function backupMyStocks() {
+  const text = JSON.stringify({ app: "stock-finder", version: 1, saved: new Date().toISOString(),
+    settings: store.get(LS.settings, {}), my: myPositions() }, null, 1);
+  const name = `stock-finder-backup-${indiaDate()}.json`;
+  try {
+    const file = new File([text], name, { type: "application/json" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {     // phones: the share sheet (Save to Files…)
+      await navigator.share({ files: [file], title: "Stock Finder backup" });
+      return;
+    }
+  } catch (e) { if (e && e.name === "AbortError") return; }                // closed the share sheet
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+async function restoreMyStocks(file) {
+  try {
+    const d = JSON.parse(await file.text());
+    const my = Array.isArray(d?.my) ? d.my.filter((p) => p && typeof p.symbol === "string" && +p.qty > 0 && +p.price > 0) : null;
+    if (d?.app !== "stock-finder" || !my) throw new Error("this is not a Stock Finder backup");
+    if (!confirm(`Restore ${my.length} stock${my.length === 1 ? "" : "s"} and your settings from ${fmtDate(d.saved)}? This replaces what is on this phone now.`)) return;
+    store.set(LS.my, my);
+    if (d.settings && typeof d.settings === "object" && !Array.isArray(d.settings)) store.set(LS.settings, d.settings);
+    keepStorage();
+    renderAll();
+    renderSettings();
+    alert("Restored ✓");
+  } catch (err) {
+    alert("This file could not be used: " + (err?.message || err));
+  }
+}
+
+// ask the browser not to clear this app's saved data when the phone runs short of space
+function keepStorage() {
+  try { navigator.storage?.persist?.().catch(() => {}); } catch { /* not supported */ }
 }
 
 // ================================================================== SIMPLE VIEWS
@@ -1943,6 +1999,7 @@ function openMarkDialog(kind, sym) {
       date: new Date().toISOString(), sellBy: kind === "swing" ? addDays(new Date().toISOString(), 16) : null,
       lastPrice: x.price });
     store.set(LS.my, my);
+    keepStorage();
     $("#dlg").close();
     renderAll();
   };
@@ -2561,6 +2618,7 @@ for (const [id, fn] of [["f-record", loadResults], ["f-settings", renderSettings
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 showTab((location.hash && location.hash.slice(1)) || store.get(LS.tab, "today"));
+if (myPositions().length) keepStorage();
 loadAll();
 setInterval(refreshLive, 60 * 1000);          // live prices (updated by the server every ~15 min)
 setInterval(loadAll, 10 * 60 * 1000);         // full data

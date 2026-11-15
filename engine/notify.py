@@ -7,11 +7,15 @@
 Every message is checked (did the service accept it?) and written to docs/data/alerts.json together
 with the alert schedule's memory (which evening plan was already sent, and so on). The app shows
 "last phone alert: sent 4:24 PM" from it, so a failure is visible instead of silent.
+
+alerts.json is PUBLIC (it is published with the site), and GitHub hides secrets only in logs, not in
+files. So every error text is scrubbed first: no topic, token, chat id, password or e-mail address.
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 import smtplib
 import time
 from datetime import datetime, timezone
@@ -27,6 +31,19 @@ FILE = "alerts.json"
 LOG_KEEP = 40
 PRIORITY = {"min": 1, "low": 2, "default": 3, "high": 4, "urgent": 5}
 RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def redact(text) -> str:
+    """Scrub an error text before it is saved to the public alerts.json (redacted first, then shortened,
+    so a secret cut in half can never slip through)."""
+    out = str(text or "")
+    for secret in (config.NTFY_TOPIC, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID, config.SMTP_USER,
+                   config.SMTP_PASSWORD, config.ALERT_EMAIL_TO):
+        if secret and len(secret) >= 3:
+            out = out.replace(secret, "***")
+    out = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***", out)                   # Telegram tokens in URLs
+    out = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+", "***@***", out)   # any e-mail address
+    return out.strip()[:160]
 
 
 def channels() -> list[str]:
@@ -54,12 +71,13 @@ def _ntfy(title: str, body: str, priority: str, tags: list[str]) -> dict:
             res = {"channel": "ntfy", "ok": r.status_code == 200, "status": r.status_code}
             if res["ok"]:
                 return res
-            res["error"] = (r.text or "")[:160].strip()
+            res["error"] = (r.text or "").strip()
             if r.status_code not in RETRY_STATUS:
                 break
         except requests.RequestException as exc:
-            res = {"channel": "ntfy", "ok": False, "status": None, "error": str(exc)[:160]}
+            res = {"channel": "ntfy", "ok": False, "status": None, "error": str(exc)}
         time.sleep(4 * (attempt + 1))
+    res["error"] = redact(res.get("error", ""))
     log.warning("ntfy failed: %s", res)
     return res
 
@@ -73,9 +91,9 @@ def _telegram(title: str, body: str) -> dict:
         ok = r.status_code == 200
         res = {"channel": "telegram", "ok": ok, "status": r.status_code}
         if not ok:
-            res["error"] = (r.text or "")[:160]
-    except requests.RequestException as exc:
-        res = {"channel": "telegram", "ok": False, "status": None, "error": str(exc)[:160]}
+            res["error"] = redact(r.text or "")
+    except requests.RequestException as exc:          # the message holds the URL, and the URL holds the token
+        res = {"channel": "telegram", "ok": False, "status": None, "error": redact(str(exc))}
     if not res["ok"]:
         log.warning("telegram failed: %s", res)
     return res
@@ -90,8 +108,9 @@ def _email(title: str, body: str) -> dict:
             s.send_message(msg)
         return {"channel": "email", "ok": True}
     except Exception as exc:
-        log.warning("email failed: %s", exc)
-        return {"channel": "email", "ok": False, "error": str(exc)[:160]}
+        err = redact(str(exc))
+        log.warning("email failed: %s", err)
+        return {"channel": "email", "ok": False, "error": err}
 
 
 def send(title: str, body: str, priority: str = "default", kind: str = "alert",

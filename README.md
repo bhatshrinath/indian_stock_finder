@@ -194,6 +194,9 @@ the repository variable `AI_NOTES` = `on`. If either is missing, it stays off an
 | ntfy / Telegram / Gmail alerts | Free | All free services |
 | AI notes | Paid, **off by default** | See above: needs a key *and* `AI_NOTES=on` |
 
+Storage stays small: the whole repository is about 1 MB after the first week and grows by roughly 15-25 MB a year
+(GitHub suggests staying under 1 GB); live prices overwrite a single commit on the `live-data` branch, so they add nothing.
+
 Safety nets:
 * **Keep the repository public.** If it were private, Actions would use the 2,000 free minutes a month, the 15-minute
   live updates use most of those, and Pages would need a paid plan.
@@ -204,6 +207,21 @@ Safety nets:
 * Each run has a time limit (20 min daily, 8 min live), so a stuck run can't keep running.
 
 ---
+
+## Your data: private and free
+
+| What | Where it is kept | Who can see it |
+|---|---|---|
+| Money amount, **My stocks** (shares, quantities, prices paid), settings | Only in that phone's browser (`localStorage`). Never sent anywhere | Only someone holding that phone. Each phone has its own list |
+| Backup of the above (Advanced → Settings & help → **Your details**) | A file the user saves (Files, Drive, or a message to themselves) | Whoever the user gives it to |
+| `NTFY_TOPIC` and any Telegram / Gmail secrets | GitHub encrypted secrets; hidden in logs | Nobody (not even in the public files: error texts are scrubbed before `alerts.json` is written) |
+| The GitHub token for the Google timer | Google Apps Script properties (and a local `.env` that git ignores) | Only the account owner |
+| Daily plan, market data, back-tests, the app's own paper trades, the alert log | `docs/data/` in this **public** repository | Anyone. It holds no personal details: the same plan for every user |
+
+The phone alerts carry only that same public plan. Anyone who knows the ntfy topic name could read them, so keep the
+topic long and random. Commits made from this computer use the GitHub "noreply" e-mail address (repository setting
+`git config user.email`); to make GitHub refuse any push that would show your real address, turn on
+**Settings → Emails → Keep my email addresses private** and **Block command line pushes that expose my email**.
 
 ## Using it sensibly (please read)
 
