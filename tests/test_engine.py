@@ -711,7 +711,8 @@ def test_evening_plan_is_sent_once_after_the_close(monkeypatch, tmp_path):
     assert len(sent) == 1
     m = sent[0]
     assert m["title"] == "Plan for Mon 16 Nov: nothing to sell ✅" and m["priority"] == 3
-    assert "TECHM" in m["message"] and "up to ₹1,650" in m["message"] and "Nifty 25,299" in m["message"]
+    assert "Tech Mahindra (TECHM) up to ₹1,650" in m["message"] and "Nifty 25,299" in m["message"]
+    assert "Nifty 50 index fund (NIFTYBEES) up to ₹292.5" in m["message"]          # no "(ETF) (NIFTYBEES)"
     assert not alerts.maybe_send_evening(_latest("2026-11-12"), None, [], "", now=fri(17, 0))   # stale data: no
     assert not alerts.maybe_send_evening(_latest("2026-11-16"), None, [], "", now=datetime(2026, 11, 16, 22, 30))  # night
 

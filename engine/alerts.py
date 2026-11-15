@@ -56,7 +56,9 @@ def inr(x) -> str:
 
 
 def short_name(x: dict) -> str:
+    """'Tech Mahindra (TECHM)', 'Nifty 50 index fund (NIFTYBEES)': no 'Ltd', no second brackets."""
     n = (x.get("name") or x["symbol"]).replace(" Limited", "").replace(" Ltd.", "").replace(" Ltd", "")
+    n = n.split(" (")[0].replace(" and Special Economic Zone", "").strip()
     return f"{n} ({x['symbol']})" if n.upper() != x["symbol"] else x["symbol"]
 
 
@@ -100,7 +102,7 @@ def evening(latest: dict, prev: dict | None, results: list[str], short_plan: str
         lines.append("\n".join(results))
     buys = [b for b in lt.get("buy", []) if (b.get("max_entry") or 0) > 0] if not g.get("out") else []
     if buys:
-        lines.append("🛒 To buy with new money (hold for a year or more):")
+        lines.append("🛒 To buy with new money (long term, checked at each month end):")
         lines += [f"• {short_name(b)} up to {inr(b.get('max_entry'))}" for b in buys[:4]]
     lines.append("Open the app for how many shares." if buys or sells else "✅ Nothing to do. Your long-term shares: keep holding.")
     body = ""
