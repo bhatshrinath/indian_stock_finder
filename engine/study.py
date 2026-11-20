@@ -15,7 +15,8 @@ Runs in GitHub Actions (Tests workflow) when the commit message contains [study]
 the run page. Survivorship bias: only today's Nifty 200 companies are tested, so companies that collapsed
 in the past are missing. Every method benefits; treat the numbers as optimistic and compare methods.
 
-    python -m engine.study                # real data (Yahoo, a few minutes to download): round 4
+    python -m engine.study                # real data (Yahoo, a few minutes to download): DEFAULT_PART
+    python -m engine.study --part late    # round 4: too late to buy the strongest shares?
     python -m engine.study --part rules   # round 3: holding rules and the short-term trade
     python -m engine.study --demo         # synthetic data, to test the code
 """
@@ -330,6 +331,8 @@ class Ctx:
         elig = base & passes & (rising if v.trend else True)
         idx = np.flatnonzero(elig)
         order = [int(k) for k in idx[np.argsort(-score[idx], kind="stable")]]
+        if v.late_rules and len(idx):
+            order = self.late_order(v, i, idx, score[idx], order)
         if v.hold_rule == "quality":
             return order, (lambda k: bool(np.isfinite(score[k]) and score[k] >= v.hold_q))
         ranked = [int(k) for k in np.flatnonzero(np.isfinite(score) & passes)]
@@ -338,12 +341,12 @@ class Ctx:
         return order, (lambda k: k in hold)
 
     # ---------------------------------------------------------------- round 4: how far a share has already run
-    def streak(self, universe: str, top: int, i: int) -> np.ndarray:
+    def streak(self, universe: str, top: int, i: int, rank: str = "mom") -> np.ndarray:
         """For every share: at how many month ends in a row (up to the latest one on or before day i) it ranked
-        in the top `top` of the plain momentum ranking of `universe`."""
-        key = (universe, top)
+        in the top `top` of the plain ranking (`rank`: "mom" or "quality") of `universe`."""
+        key = (universe, top, rank)
         if key not in self._streaks:
-            base = Variant("streak", universe=universe)
+            base = Variant("streak", universe=universe, rank=rank)
             me = np.flatnonzero(self.is_me)
             tab = np.zeros((len(me), self.K), np.int16)
             cur = np.zeros(self.K, np.int16)
@@ -368,7 +371,7 @@ class Ctx:
             ext = c[idx] / self.sma200[i, idx] - 1
             zz = np.clip((ext - np.nanmean(ext)) / (np.nanstd(ext, ddof=1) or 1.0), -3, 3)
             order = [int(k) for k in idx[np.argsort(-(score - v.ext_pen * np.nan_to_num(zz)), kind="stable")]]
-        st = self.streak(v.universe, int(v.hold_mult * max(v.n, 1)), i) if v.max_streak is not None else None
+        st = self.streak(v.universe, int(v.hold_mult * max(v.n, 1)), i, v.rank) if v.max_streak is not None else None
         out = []
         with np.errstate(invalid="ignore"):
             for k in order:
@@ -656,15 +659,19 @@ LATE_FEATURES = (   # key, short name, bucket edges (fractions; streak in month 
     ("r36", "up in 3 yrs", (-9, 0.5, 1.0, 2.0, 99)),
     ("pre", "up in the 2 yrs before that", (-9, 0.0, 0.3, 0.8, 99)),
     ("r1", "up in the last month", (-9, 0.0, 0.05, 0.1, 99)),
+    ("hi", "vs its 1-yr high", (-9, -0.25, -0.15, -0.05, 99)),
+    ("trend", "trend", (0, 1, 2)),
 )
 
 
-def late_events(ctx: Ctx, universe: str, top: int, n_buy: int = 3) -> pd.DataFrame:
+def late_events(ctx: Ctx, universe: str, top: int, n_buy: int = 3, rank: str = "mom",
+                guard: bool = True) -> pd.DataFrame:
     """One row per (month end, share) for the top `top` of the method's ranking ("top") and the other shares
     that passed its rules ("rest"): how far each had run, and what followed. `buy` marks the shares the plan
-    would actually buy (the first n_buy, one per industry)."""
-    v = Variant("late", universe=universe)
-    out = ctx.guard_out(f"g2:{config.GUARD_BAND}")
+    would actually buy (the first n_buy, one per industry). rank="quality": the champion-like shares (rose in
+    most 12-month spells, fell less than the market in bad months, grew faster, calm), best score first."""
+    v = Variant("late", universe=universe, rank=rank)
+    out = ctx.guard_out(f"g2:{config.GUARD_BAND}") if guard else np.zeros(ctx.T, bool)
     rows = []
     for i in np.flatnonzero(ctx.is_me):
         i = int(i)
@@ -673,7 +680,7 @@ def late_events(ctx: Ctx, universe: str, top: int, n_buy: int = 3) -> pd.DataFra
         order, _ = ctx.candidates(v, i)
         if not order:
             continue
-        st = ctx.streak(universe, top, i)
+        st = ctx.streak(universe, top, i, rank)
         buy = set(ctx.pick(order, [], n_buy))
         e = i + 1
         for pos, k in enumerate(order):
@@ -686,7 +693,9 @@ def late_events(ctx: Ctx, universe: str, top: int, n_buy: int = 3) -> pd.DataFra
                        "r12": c / ctx.Cf[i - 252, k] - 1, "ext": c / ctx.sma200[i, k] - 1,
                        "r36": c / ctx.Cf[i - 756, k] - 1 if i >= 756 else np.nan,
                        "pre": ctx.Cf[i - 252, k] / ctx.Cf[i - 756, k] - 1 if i >= 756 else np.nan,
-                       "r1": c / ctx.Cf[i - 21, k] - 1, "streak": int(st[k])}
+                       "r1": c / ctx.Cf[i - 21, k] - 1, "streak": int(st[k]), "hi": c / ctx.hi252[i, k] - 1}
+                s, sp = ctx.sma200[i, k], ctx.sma200_prev[i, k]
+                row["trend"] = float(c > s and s > sp) if np.isfinite(s) and np.isfinite(sp) else np.nan
             for h in LATE_H:
                 j = i + h
                 if j < ctx.T and np.isfinite(ctx.Cf[j, k]):
@@ -723,6 +732,11 @@ def _late_stats(d: pd.DataFrame) -> str:
 def _late_label(key: str, lo: float, hi: float) -> str:
     if key == "streak":
         return f"{lo:.0f}" if hi - lo == 1 else (f">={lo:.0f}" if hi >= 999 else f"{lo:.0f}-{hi - 1:.0f}")
+    if key == "trend":
+        return "rising (above a rising 200d avg)" if lo >= 1 else "resting"
+    if key == "hi":
+        g = lambda x: f"{-100 * x:.0f}%"
+        return (f"over {g(hi)} below" if lo <= -9 else f"within {g(lo)}" if hi >= 99 else f"{g(hi)}-{g(lo)} below")
     f = lambda x: f"{100 * x:.0f}%"
     return f"<{f(hi)}" if lo <= -9 else (f">={f(lo)}" if hi >= 99 else f"{f(lo)}-{f(hi)}")
 
@@ -748,12 +762,15 @@ def late_buckets(ev: pd.DataFrame, title: str, keys: tuple[str, ...], head: bool
     return rows
 
 
-def late_thirds(ev: pd.DataFrame, title: str) -> list[str]:
+def late_thirds(ev: pd.DataFrame, title: str,
+                keys: tuple[str, ...] = ("r12", "ext", "streak", "r36", "pre", "r1")) -> list[str]:
     """Within each month's top picks: the third that had run furthest minus the third that had run least
     (lead over the Nifty fund). Windows overlap, so the t value is divided by sqrt(months in the window)."""
     top = ev[ev.grp == "top"]
     rows = [f"{title}: furthest-run third minus least-run third of each month's top picks (lead over the Nifty fund)"]
     for key, name, _ in LATE_FEATURES:
+        if key not in keys:
+            continue
         parts = []
         for h, mo in ((126, 6), (252, 12)):
             diffs = []
@@ -827,11 +844,55 @@ def late_entry(ctx: Ctx) -> list[list[str]]:
     return notes
 
 
+# Round 5: the same question for the long-term champions (Advanced -> Long-term picks): shares that rose in most
+# years and held up in crashes, i.e. shares that have "gone up for a long time" by design. The app's advice is to
+# buy one only while it is rising (above a rising 200-day average); this checks that advice and the "too late" worry.
+def champ_variants(universe: str) -> list[Variant]:
+    tag = {"n200": "", "top100": " T100"}.get(universe, f" {universe}")
+    base = dict(universe=universe, rank="quality", trend=True, hold_rule="quality", guard="none")
+    return [Variant(f"H{tag} champions while rising (the app's advice), no guard", **base),
+            Variant(f"H0{tag} champions, rising or not", **{**base, "trend": False}),
+            Variant(f"HE{tag} H, no buy >30% above 200d avg", **base, max_ext=0.30),
+            Variant(f"HG{tag} H, no buy up >50% in 12 mo", **base, max_r12=0.50),
+            Variant(f"HL{tag} H, no buy up >150% in 3 yrs", **base, max_r36=1.50)]
+
+
+def late_champ(ctx: Ctx) -> list[list[str]]:
+    """Round 5. At most 6 notes."""
+    notes = []
+    for uni, title in (("n200", "CHAMPION-LIKE, Nifty 200 (today's), top 10 by quality score, every month end"),
+                       ("top100", "CHAMPION-LIKE among the 100 most traded then (no hindsight), top 10")):
+        t0 = time.time()
+        ev = late_events(ctx, uni, 10, rank="quality", guard=False)
+        log.info("champion events %s: %d rows (%.1fs)", uni, len(ev), time.time() - t0)
+        if ev.empty:
+            notes.append([f"{title}: no data"])
+            continue
+        notes.append(late_buckets(ev, title, ("r12", "ext", "hi", "trend")))
+        notes.append(late_buckets(ev, title, ("r36", "streak", "r1"), head=False)
+                     + late_thirds(ev, title, ("r12", "ext", "hi", "r36", "streak")))
+    for uni in ("n200", "top100"):
+        rows = [f"CHAMPION RULES, day by day ({uni}; 3 champions one per industry + 1/3 index fund, 25% safety price, "
+                f"kept while the quality score stays in the top half), {ctx.dates[ctx.start].date()}..{ctx.dates[-1].date()}"]
+        for v in champ_variants(uni):
+            t0 = time.time()
+            eq, closed, _ = simulate(ctx, v)
+            teq, _, _ = simulate(ctx, replace(v, tax=True))
+            rows.append(late_line(v.name, summary(ctx, eq, closed), summary(ctx, teq)["cagr"]))
+            log.info("%s: %.1fs", v.name, time.time() - t0)
+        notes.append(rows)
+    return notes
+
+
+DEFAULT_PART = "champ"      # what a [study] commit runs (GitHub shows at most 10 notes per step)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--demo", action="store_true", help="synthetic data (tests the code only)")
-    ap.add_argument("--part", choices=("late", "rules", "all"), default="late",
-                    help="late = round 4 (is it too late to buy?); rules = round 3 (holding rules, short trades)")
+    ap.add_argument("--part", choices=("late", "champ", "rules", "all"), default=DEFAULT_PART,
+                    help="late = round 4 (too late to buy?), champ = round 5 (the same for champions), "
+                         "rules = round 3 (holding rules, short trades)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
     logging.getLogger("yfinance").setLevel(logging.CRITICAL)
@@ -853,6 +914,8 @@ def main(argv=None) -> int:
     parts = []
     if args.part in ("late", "all"):
         parts.append(("late", lambda: late_entry(ctx)))
+    if args.part in ("champ", "all"):
+        parts.append(("champ", lambda: late_champ(ctx)))
     if args.part in ("rules", "all"):
         parts += [("long-term", lambda: long_term(ctx)), ("short-term", lambda: [short_term(ctx, n50)])]
     for title, fn in parts:
