@@ -8,13 +8,16 @@ What it answers, using at every moment only the prices known then, with costs:
     25% rising safety price. Turnover and a rough tax estimate are included: selling within a year costs
     20% of the gain in tax, while a small investor's long-term gains stay under the yearly tax-free limit.
   * Short term: whether the "safe dip" trade has a real edge over 18 years.
+  * Round 4, "is it too late to buy?": do shares that have already risen a lot, or for a long time, still do
+    well after the app picks them, and would skipping such buys have helped?
 
 Runs in GitHub Actions (Tests workflow) when the commit message contains [study]; the results are notes on
 the run page. Survivorship bias: only today's Nifty 200 companies are tested, so companies that collapsed
 in the past are missing. Every method benefits; treat the numbers as optimistic and compare methods.
 
-    python -m engine.study          # real data (Yahoo, a few minutes to download)
-    python -m engine.study --demo   # synthetic data, to test the code
+    python -m engine.study                # real data (Yahoo, a few minutes to download): round 4
+    python -m engine.study --part rules   # round 3: holding rules and the short-term trade
+    python -m engine.study --demo         # synthetic data, to test the code
 """
 from __future__ import annotations
 
@@ -125,6 +128,18 @@ class Variant:
                                     # "gm" checked only at month ends
     trail: float | None = 0.25      # rising safety price (fraction below the highest close since buying)
     tax: bool = False
+    # round 4 ("is it too late to buy?"): do not BUY a share that has already run far (one already held is
+    # kept by the usual rules). None = no such rule.
+    max_ext: float | None = None    # price more than this above its 200-day average
+    max_r12: float | None = None    # risen more than this over the last 12 months
+    max_r36: float | None = None    # risen more than this over the last 3 years
+    max_streak: int | None = None   # in the keep zone (top hold_mult x n) at more than this many month ends in a row
+    ext_pen: float = 0.0            # softer: the buy order uses score - ext_pen x z(stretch above the 200-day average)
+
+    @property
+    def late_rules(self) -> bool:
+        return bool(self.ext_pen) or any(x is not None for x in (self.max_ext, self.max_r12, self.max_r36,
+                                                                  self.max_streak))
 
 
 class Ctx:
@@ -170,6 +185,7 @@ class Ctx:
         self._quality(Cf)
         self.guard: dict[str, np.ndarray] = {}
         self._qcache: dict = {}
+        self._streaks: dict = {}
 
     # ---------------------------------------------------------------- monthly quality facts
     def _quality(self, Cf: pd.DataFrame) -> None:
@@ -300,8 +316,13 @@ class Ctx:
                 return [], (lambda k: True)              # nothing to compare: keep what is held
             a, b = self.m12[i, idx] / vol[idx], self.m6[i, idx] / vol[idx]
             z = lambda s: np.clip((s - s.mean()) / (s.std(ddof=1) or 1.0), -3, 3)
-            order = [int(k) for k in idx[np.argsort(-(0.5 * z(a) + 0.5 * z(b)), kind="stable")]]
-            hold = set(order[: int(v.hold_mult * max(v.n, 1))])
+            score = 0.5 * z(a) + 0.5 * z(b)
+            order = [int(k) for k in idx[np.argsort(-score, kind="stable")]]
+            top = int(v.hold_mult * max(v.n, 1))
+            hold = set(order[:top])
+            if v.late_rules:                             # what is bought changes; a held share is still kept while
+                order = self.late_order(v, i, idx, score, order)    # in the top, or while it would still be bought
+                hold |= set(order[:top])
             return order, (lambda k: k in hold)
         if qs is None:
             return [], (lambda k: True)
@@ -315,6 +336,52 @@ class Ctx:
         ranked.sort(key=lambda k: -score[k])
         hold = set(ranked[: int(v.hold_mult * max(v.n, 1))])
         return order, (lambda k: k in hold)
+
+    # ---------------------------------------------------------------- round 4: how far a share has already run
+    def streak(self, universe: str, top: int, i: int) -> np.ndarray:
+        """For every share: at how many month ends in a row (up to the latest one on or before day i) it ranked
+        in the top `top` of the plain momentum ranking of `universe`."""
+        key = (universe, top)
+        if key not in self._streaks:
+            base = Variant("streak", universe=universe)
+            me = np.flatnonzero(self.is_me)
+            tab = np.zeros((len(me), self.K), np.int16)
+            cur = np.zeros(self.K, np.int16)
+            for r, m in enumerate(me):
+                order, _ = self.candidates(base, int(m))
+                nxt = np.zeros(self.K, np.int16)
+                if order:
+                    t = order[:top]
+                    nxt[t] = cur[t] + 1
+                cur = nxt
+                tab[r] = cur
+            self._streaks[key] = (me, tab)
+        me, tab = self._streaks[key]
+        r = int(np.searchsorted(me, i, side="right")) - 1
+        return tab[r] if r >= 0 else np.zeros(self.K, np.int16)
+
+    def late_order(self, v: Variant, i: int, idx: np.ndarray, score: np.ndarray, order: list[int]) -> list[int]:
+        """The buy order without the shares that have already run too far (Variant.max_*), or re-ranked so that
+        stretched shares come later (Variant.ext_pen). Unknown values never block a share."""
+        c = self.Cf[i]
+        if v.ext_pen:
+            ext = c[idx] / self.sma200[i, idx] - 1
+            zz = np.clip((ext - np.nanmean(ext)) / (np.nanstd(ext, ddof=1) or 1.0), -3, 3)
+            order = [int(k) for k in idx[np.argsort(-(score - v.ext_pen * np.nan_to_num(zz)), kind="stable")]]
+        st = self.streak(v.universe, int(v.hold_mult * max(v.n, 1)), i) if v.max_streak is not None else None
+        out = []
+        with np.errstate(invalid="ignore"):
+            for k in order:
+                if v.max_ext is not None and c[k] > (1 + v.max_ext) * self.sma200[i, k]:
+                    continue
+                if v.max_r12 is not None and i >= 252 and c[k] > (1 + v.max_r12) * self.Cf[i - 252, k]:
+                    continue
+                if v.max_r36 is not None and i >= 756 and c[k] > (1 + v.max_r36) * self.Cf[i - 756, k]:
+                    continue
+                if st is not None and st[k] > v.max_streak:
+                    continue
+                out.append(k)
+        return out
 
     def pick(self, order: list[int], held: list[int], n_free: int) -> list[int]:
         used = {self.ind[k] for k in held}
@@ -573,9 +640,198 @@ def short_term(ctx: Ctx, n50: set[str]) -> list[str]:
     return rows
 
 
+# ======================================================================= round 4: is it too late to buy?
+# The worry (Nov 2026): the app suggests shares that have already been rising for a long time, so the chance
+# may be gone. Two answers on the same 18 years, using only what was known at each moment:
+#  1. Event study: at every month end while the market guard lets the app buy, the shares the method ranks
+#     highest, split by how far and for how long they had already risen; then what they did over the next 6 and
+#     12 months (bought at the next open; against the Nifty 50 index fund with its dividends over the same days).
+#  2. The method with rules that skip such "late" buys (a share already held is kept by the usual rules),
+#     simulated day by day, on today's Nifty 50 and on the most traded shares of each time (no hindsight).
+LATE_H = (126, 252)
+LATE_FEATURES = (   # key, short name, bucket edges (fractions; streak in month ends)
+    ("r12", "up in 12 mo", (-9, 0.2, 0.4, 0.7, 1.0, 99)),
+    ("ext", "above 200d avg", (-9, 0.1, 0.2, 0.3, 0.5, 99)),
+    ("streak", "months in the top in a row", (1, 2, 4, 7, 13, 999)),
+    ("r36", "up in 3 yrs", (-9, 0.5, 1.0, 2.0, 99)),
+    ("pre", "up in the 2 yrs before that", (-9, 0.0, 0.3, 0.8, 99)),
+    ("r1", "up in the last month", (-9, 0.0, 0.05, 0.1, 99)),
+)
+
+
+def late_events(ctx: Ctx, universe: str, top: int, n_buy: int = 3) -> pd.DataFrame:
+    """One row per (month end, share) for the top `top` of the method's ranking ("top") and the other shares
+    that passed its rules ("rest"): how far each had run, and what followed. `buy` marks the shares the plan
+    would actually buy (the first n_buy, one per industry)."""
+    v = Variant("late", universe=universe)
+    out = ctx.guard_out(f"g2:{config.GUARD_BAND}")
+    rows = []
+    for i in np.flatnonzero(ctx.is_me):
+        i = int(i)
+        if i < ctx.start or out[i] or i + 1 >= ctx.T or i < 252:
+            continue
+        order, _ = ctx.candidates(v, i)
+        if not order:
+            continue
+        st = ctx.streak(universe, top, i)
+        buy = set(ctx.pick(order, [], n_buy))
+        e = i + 1
+        for pos, k in enumerate(order):
+            o, c = ctx.O[e, k], ctx.Cf[i, k]
+            entry = o if np.isfinite(o) and o > 0 else c
+            if not (np.isfinite(entry) and entry > 0):
+                continue
+            with np.errstate(invalid="ignore", divide="ignore"):
+                row = {"i": i, "k": k, "grp": "top" if pos < top else "rest", "buy": k in buy,
+                       "r12": c / ctx.Cf[i - 252, k] - 1, "ext": c / ctx.sma200[i, k] - 1,
+                       "r36": c / ctx.Cf[i - 756, k] - 1 if i >= 756 else np.nan,
+                       "pre": ctx.Cf[i - 252, k] / ctx.Cf[i - 756, k] - 1 if i >= 756 else np.nan,
+                       "r1": c / ctx.Cf[i - 21, k] - 1, "streak": int(st[k])}
+            for h in LATE_H:
+                j = i + h
+                if j < ctx.T and np.isfinite(ctx.Cf[j, k]):
+                    r = ctx.Cf[j, k] / entry - 1
+                    rn = ctx.ix[j] / ctx.ixo[e] * (1 + IDX_DIV) ** (h / 252) - 1
+                    row[f"r{h}"], row[f"x{h}"] = r, r - rn
+                else:
+                    row[f"r{h}"] = row[f"x{h}"] = np.nan
+            if e + 126 <= ctx.T:                  # did the 25% rising safety price sell it within ~6 months?
+                cl, lo = ctx.Cf[e:e + 126, k], ctx.L[e:e + 126, k]
+                prev_hi = np.fmax.accumulate(np.concatenate([[entry], cl[:-1]]))
+                with np.errstate(invalid="ignore"):
+                    row["stop"] = float(np.any(lo <= (1 - config.HOLD_STOCK_TRAIL) * prev_hi))
+            else:
+                row["stop"] = np.nan
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _late_stats(d: pd.DataFrame) -> str:
+    parts = []
+    for h, lab in ((126, "6m"), (252, "12m")):
+        r, x = d[f"r{h}"].dropna(), d[f"x{h}"].dropna()
+        if len(r) < 10:
+            parts.append(f"{lab} -")
+            continue
+        parts.append(f"{lab} med{100 * r.median():+.0f} beat{100 * (x > 0).mean():.0f} lead{100 * x.mean():+.0f} "
+                     f"bad{100 * r.quantile(0.1):+.0f}")
+    s = d["stop"].dropna()
+    parts.append(f"stop{100 * s.mean():.0f}" if len(s) else "stop -")
+    return " | ".join(parts)
+
+
+def _late_label(key: str, lo: float, hi: float) -> str:
+    if key == "streak":
+        return f"{lo:.0f}" if hi - lo == 1 else (f">={lo:.0f}" if hi >= 999 else f"{lo:.0f}-{hi - 1:.0f}")
+    f = lambda x: f"{100 * x:.0f}%"
+    return f"<{f(hi)}" if lo <= -9 else (f">={f(lo)}" if hi >= 99 else f"{f(lo)}-{f(hi)}")
+
+
+def late_buckets(ev: pd.DataFrame, title: str, keys: tuple[str, ...], head: bool = True) -> list[str]:
+    top = ev[ev.grp == "top"]
+    rows = []
+    if head:
+        rows = [f"{title}: {len(top)} picks over {top.i.nunique()} month ends. n/months | after 6m and 12m: med = "
+                "median gain %, beat = % that beat the Nifty fund, lead = average lead over it (pts), bad = 1 in 10 "
+                "did worse (%) | stop = % sold by the 25% safety price within 6m",
+                f"ALL TOP: n{len(top)} | {_late_stats(top)}",
+                f"PLAN BUYS (3, one per industry): n{int(top.buy.sum())} | {_late_stats(top[top.buy])}",
+                f"REST (passed the rules, ranked lower): n{int((ev.grp == 'rest').sum())} | "
+                f"{_late_stats(ev[ev.grp == 'rest'])}"]
+    for key, name, edges in LATE_FEATURES:
+        if key not in keys:
+            continue
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            d = top[(top[key] >= lo) & (top[key] < hi)]
+            if len(d) >= 15:
+                rows.append(f"{name} {_late_label(key, lo, hi)}: n{len(d)}/{d.i.nunique()}mo | {_late_stats(d)}")
+    return rows
+
+
+def late_thirds(ev: pd.DataFrame, title: str) -> list[str]:
+    """Within each month's top picks: the third that had run furthest minus the third that had run least
+    (lead over the Nifty fund). Windows overlap, so the t value is divided by sqrt(months in the window)."""
+    top = ev[ev.grp == "top"]
+    rows = [f"{title}: furthest-run third minus least-run third of each month's top picks (lead over the Nifty fund)"]
+    for key, name, _ in LATE_FEATURES:
+        parts = []
+        for h, mo in ((126, 6), (252, 12)):
+            diffs = []
+            for _, g in top.groupby("i"):
+                g = g.dropna(subset=[key, f"x{h}"])
+                n3 = len(g) // 3
+                if n3 < 2:
+                    continue
+                g = g.sort_values(key, kind="stable")
+                diffs.append(g[f"x{h}"].iloc[-n3:].mean() - g[f"x{h}"].iloc[:n3].mean())
+            d = np.asarray(diffs)
+            if len(d) < 12:
+                parts.append(f"{mo}m -")
+                continue
+            sd = d.std(ddof=1)
+            t = d.mean() / (sd / math.sqrt(len(d))) / math.sqrt(mo) if sd > 0 else float("nan")
+            parts.append(f"{mo}m {100 * d.mean():+.1f} pts, late third better in {100 * (d > 0).mean():.0f}% of "
+                         f"{len(d)} months, t~{t:.1f}")
+        rows.append(f"{name}: " + " | ".join(parts))
+    return rows
+
+
+def late_variants(universe: str) -> list[Variant]:
+    from .longterm import method                     # My Plan's rules (longterm imports this module lazily)
+    tag = {"n50": "", "top50": " T50", "top100": " T100"}.get(universe, f" {universe}")
+    k = config.LT_KEEP_TOP
+    return [method(f"P{tag} My Plan now", universe=universe),
+            method(f"E25{tag} no buy >25% above 200d avg", universe=universe, max_ext=0.25),
+            method(f"E35{tag} no buy >35% above", universe=universe, max_ext=0.35),
+            method(f"E50{tag} no buy >50% above", universe=universe, max_ext=0.50),
+            method(f"G60{tag} no buy up >60% in 12 mo", universe=universe, max_r12=0.60),
+            method(f"G100{tag} no buy up >100% in 12 mo", universe=universe, max_r12=1.00),
+            method(f"L200{tag} no buy up >200% in 3 yrs", universe=universe, max_r36=2.00),
+            method(f"S6{tag} no buy in top {k} >6 mo in a row", universe=universe, max_streak=6),
+            method(f"S12{tag} no buy in top {k} >12 mo in a row", universe=universe, max_streak=12),
+            method(f"Q{tag} stretched shares bought later", universe=universe, ext_pen=0.5)]
+
+
+def late_line(name: str, s: dict, tax_cagr: float | None = None) -> str:
+    wy, wr = s["worst_year"]
+    p1, p2, p3 = s["periods"]
+    return (f"{name} | {pct(s['cagr'], 1)}/yr, after tax {pct(tax_cagr, 1)} | worst fall {pct(s['maxdd'])} | worst yr {wy} "
+            f"{pct(wr, 0, True)} | up {s['up_years']}/{s['n_years']} | 08-13 {pct(p1, 0, True)} 14-19 {pct(p2, 0, True)} "
+            f"20-26 {pct(p3, 0, True)} | {s['sells_per_year']:.1f} sells/yr (swap {s['why']['rotate']})")
+
+
+def late_entry(ctx: Ctx) -> list[list[str]]:
+    """Round 4. At most 9 notes (GitHub shows 10 per step)."""
+    notes = []
+    for uni, top, title in (("n50", config.LT_KEEP_TOP, f"LATE? Nifty 50 (today's), top {config.LT_KEEP_TOP}"),
+                            ("top100", 15, "LATE? 100 most traded then (no hindsight), top 15"),
+                            ("n200", 15, "LATE? Nifty 200 (today's, like the Advanced list), top 15")):
+        t0 = time.time()
+        ev = late_events(ctx, uni, top)
+        log.info("late events %s: %d rows (%.1fs)", uni, len(ev), time.time() - t0)
+        if ev.empty:
+            notes.append([f"{title}: no data"])
+            continue
+        notes.append(late_buckets(ev, title, ("r12", "ext", "streak")))
+        notes.append(late_buckets(ev, title, ("r36", "pre", "r1"), head=False) + late_thirds(ev, title))
+    for uni in ("n50", "top50", "top100"):
+        rows = [f"LATE RULES, day by day ({uni}; only buys change, a held share is kept while in the top 9 or still "
+                f"buyable), {ctx.dates[ctx.start].date()}..{ctx.dates[-1].date()}"]
+        for v in late_variants(uni):
+            t0 = time.time()
+            eq, closed, _ = simulate(ctx, v)
+            teq, _, _ = simulate(ctx, replace(v, tax=True))
+            rows.append(late_line(v.name, summary(ctx, eq, closed), summary(ctx, teq)["cagr"]))
+            log.info("%s: %.1fs", v.name, time.time() - t0)
+        notes.append(rows)
+    return notes
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--demo", action="store_true", help="synthetic data (tests the code only)")
+    ap.add_argument("--part", choices=("late", "rules", "all"), default="late",
+                    help="late = round 4 (is it too late to buy?); rules = round 3 (holding rules, short trades)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
     logging.getLogger("yfinance").setLevel(logging.CRITICAL)
@@ -594,7 +850,12 @@ def main(argv=None) -> int:
     log.info("data: %d days x %d shares, %s..%s (%.0fs)", len(p.close), p.close.shape[1],
              p.close.index[0].date(), p.close.index[-1].date(), time.time() - t0)
     ctx = Ctx(p, ixo, uni, n50)
-    for title, fn in (("long-term", lambda: long_term(ctx)), ("short-term", lambda: [short_term(ctx, n50)])):
+    parts = []
+    if args.part in ("late", "all"):
+        parts.append(("late", lambda: late_entry(ctx)))
+    if args.part in ("rules", "all"):
+        parts += [("long-term", lambda: long_term(ctx)), ("short-term", lambda: [short_term(ctx, n50)])]
+    for title, fn in parts:
         try:
             for k, rows in enumerate(fn()):
                 note(f"{title}-{k + 1}", rows)
