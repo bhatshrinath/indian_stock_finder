@@ -680,6 +680,66 @@ def test_guard_waits_for_a_clear_break_and_a_clear_recovery():
     assert st["out"] is False and st["sell_below"] == pytest.approx(0.97 * s200.iloc[-1], abs=0.01)
 
 
+def _late_setup(n=30, days=2400):
+    syms = [f"S{i:02d}" for i in range(n)]
+    p = data.load_demo(syms, days=days, seed=5)
+    uni = pd.DataFrame({"symbol": syms, "name": syms, "industry": [f"I{i % 6}" for i in range(n)]})
+    return p, uni, set(syms[:n // 2])
+
+
+def test_too_late_evidence_never_peeks_at_the_future():
+    """How far and how long a pick had already risen when it was picked must not change when later prices change;
+    only what followed may."""
+    from engine import study
+    p, uni, n50 = _late_setup()
+    ctx = study.Ctx(p, None, uni, n50)
+    i0 = int(np.flatnonzero(ctx.is_me & (np.arange(ctx.T) > ctx.T - 400))[0])
+    # every share drifts differently from two days after that month end (the pick is bought at the next open)
+    T, K = p.close.shape
+    ramp = np.zeros(T)
+    ramp[i0 + 2:] = np.arange(1, T - i0 - 1)
+    slope = np.random.default_rng(3).uniform(-0.002, 0.002, K)
+    fac = pd.DataFrame(np.exp(np.outer(ramp, slope)), index=p.close.index, columns=p.close.columns)
+    p2 = data.Prices(p.open * fac, p.high * fac, p.low * fac, p.close * fac, p.volume, p.index_close,
+                     p.index_high, p.index_low, source=p.source)
+    ev1 = study.late_events(ctx, "n200", 8, guard=False)
+    ev2 = study.late_events(study.Ctx(p2, None, uni, n50), "n200", 8, guard=False)
+    facts = ["i", "k", "grp", "buy", "r12", "ext", "r36", "pre", "r1", "streak", "hi", "trend"]
+    a = ev1[ev1.i <= i0][facts].reset_index(drop=True)
+    b = ev2[ev2.i <= i0][facts].reset_index(drop=True)
+    assert len(a) > 50
+    pd.testing.assert_frame_equal(a, b)
+    after = lambda ev: ev[ev.i == i0]["r126"].to_numpy()
+    assert not np.allclose(after(ev1), after(ev2), equal_nan=True)     # what followed did change
+
+
+def test_too_late_table_and_months_on_top():
+    from engine import longterm, study
+    p, uni, n50 = _late_setup()
+    t = longterm.late_table(study.Ctx(p, None, uni, n50))
+    for key in ("n50", "n200"):
+        row = t[key]
+        assert row["picks"] > 0 and row["r12"] and row["streak"]
+        his = [b["hi"] for b in row["r12"]]
+        assert his == sorted(his, key=lambda v: float("inf") if v is None else v)   # rising order, open end last
+        assert all(0 <= b["beat12"] <= 100 for b in row["r12"] if b.get("beat12") is not None)
+        assert sum(b["n"] for b in row["r12"]) <= row["picks"]
+    assert {"rising", "resting"} <= set(t["champ"]["trend"])
+    assert all(isinstance(t["rules"][k], float) for k in ("skip_doubled", "skip_long_leaders", "champ", "champ_strict"))
+    # months among the 9 strongest, counted back from the latest month-end review
+    f = Features(p)
+    tm = longterm.top_months(f, n50)
+    dates = f.close.index
+    ri = longterm.review_index(dates)
+    me = [i for i in range(len(dates) - 1) if dates[i].month != dates[i + 1].month and i <= ri]
+    me += [ri] if ri == len(dates) - 1 else []                  # the last weekday of a month is itself a review
+    tops = lambda i: set(longterm.ranking(f, n50, at=i)[:config.LT_KEEP_TOP])
+    assert set(tm) == tops(me[-1]) and all(v >= 1 for v in tm.values())
+    s, m = max(tm.items(), key=lambda kv: kv[1])
+    assert all(s in tops(i) for i in me[-m:])
+    assert len(me) == m or s not in tops(me[-m - 1])
+
+
 def test_review_happens_at_month_end():
     from engine import longterm
     d = pd.bdate_range("2026-10-20", "2026-11-30")                  # Mon 30 Nov is the month's last weekday

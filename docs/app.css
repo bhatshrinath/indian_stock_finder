@@ -268,6 +268,9 @@ dialog .card { border: 0; box-shadow: none; padding: 0; }
 .expect-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .expect-table th, .expect-table td { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 .expect-table th { font-size: 14px; }
+/* "too late to buy after a rise?" table: this share's row stands out */
+.late-table { font-size: 15px; margin: 6px 0; }
+.late-table tr.hl td { background: var(--info-bg); font-weight: 600; }
 ol.steps { padding-left: 20px; margin: 6px 0; }
 ol.steps li { margin: 4px 0; }
 

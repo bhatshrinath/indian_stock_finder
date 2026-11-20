@@ -203,11 +203,11 @@ def app_backtest(p, uni: pd.DataFrame, n50: set[str], ixo: pd.Series | None = No
                       for d, x, y in zip(me.index, me.to_numpy(), mb.to_numpy())]}
 
 
-def long_test(p, uni: pd.DataFrame, n50: set[str], ixo: pd.Series | None = None) -> dict:
+def long_test(p, uni: pd.DataFrame, n50: set[str], ixo: pd.Series | None = None, ctx=None) -> dict:
     """The same method over all of Yahoo's history (from 2008), with the old rules, the index fund and a
     stricter no-hindsight version for comparison. Rebuilt weekly with the long-term champions study."""
     from . import study
-    ctx = study.Ctx(p, ixo, uni, n50)
+    ctx = ctx or study.Ctx(p, ixo, uni, n50)
     if ctx.start >= ctx.T - 252 * 3:
         return {}
     rows = {}
@@ -253,10 +253,122 @@ def load_long_test() -> dict:
         return {}
 
 
+# ======================================================================= "is it too late to buy?" (engine/study.py, round 4-5)
+# The worry: the app suggests shares that have already risen a lot, or for a long time, so the chance may be gone.
+# On 18 years of real prices it was not so: the method's picks that had risen most beat the Nifty fund at least as
+# often afterwards, how long a share had been among the strongest made no real difference, and every rule that
+# skipped such buys earned less. This table, rebuilt weekly, lets every card show the evidence for its own share.
+LATE_R12 = (-9, 0.2, 0.4, 0.7, 1.0, 99)                       # rise over the 12 months before the pick
+LATE_STREAK = ((1, 1), (2, 3), (4, 6), (7, 12), (13, None))   # month-end reviews in a row among the strongest
+LATE_HI = (-9, -0.25, -0.15, -0.05, 99)                       # distance from the 1-year high
+
+
+def _late_stats(d: pd.DataFrame) -> dict:
+    """What followed (percent): typical (median) gain, share that beat the Nifty fund, average lead over it and the
+    bad case (1 in 10 did worse) after 6 and 12 months; how often the 25% safety price sold it within 6 months."""
+    out = {"n": int(len(d))}
+    for h, t in ((126, "6"), (252, "12")):
+        r, x = d[f"r{h}"].dropna(), d[f"x{h}"].dropna()
+        if len(r) >= 10:
+            out.update({f"med{t}": _r(100 * r.median(), 0), f"beat{t}": _r(100 * (x > 0).mean(), 0),
+                        f"lead{t}": _r(100 * x.mean(), 0), f"bad{t}": _r(100 * r.quantile(0.1), 0)})
+    s = d["stop"].dropna()
+    if len(s) >= 10:
+        out["stop6"] = _r(100 * s.mean(), 0)
+    return out
+
+
+def _late_buckets(top: pd.DataFrame, key: str, edges) -> list[dict]:
+    edge = lambda v: None if abs(v) >= 9 else _r(100 * v, 0)
+    out = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        d = top[(top[key] >= lo) & (top[key] < hi)]
+        if len(d) >= 15:
+            out.append({"lo": edge(lo), "hi": edge(hi), **_late_stats(d)})
+    return out
+
+
+def _thirds(ev: pd.DataFrame, key: str) -> dict | None:
+    from . import study
+    d = study.thirds_diff(ev, key, 252)
+    if len(d) < 12:
+        return None
+    return {"lead12": _r(100 * d.mean(), 1), "better_pct": _r(100 * (d > 0).mean(), 0), "months": int(len(d))}
+
+
+def late_table(ctx) -> dict:
+    """The "is it too late?" evidence on all the history given (the weekly ~18 years): what the picks did over the
+    next 6 and 12 months, by how far and how long they had already risen. n50 = My Plan's shares, n200 = the
+    Advanced long-term list, champ = champion-like shares (rose in most years, held up in bad months), champ_strict =
+    the same among the 100 most traded shares of each time (no hindsight)."""
+    from . import study
+    out = {"from": str(ctx.dates[ctx.start].date()), "to": str(ctx.dates[-1].date()),
+           "years": _r((ctx.dates[-1] - ctx.dates[ctx.start]).days / 365.25, 1)}
+    for key, uni, top, rank, guard in (("n50", "n50", config.LT_KEEP_TOP, "mom", True),
+                                       ("n200", "n200", 15, "mom", True),
+                                       ("champ", "n200", 10, "quality", False),
+                                       ("champ_strict", "top100", 10, "quality", False)):
+        ev = study.late_events(ctx, uni, top, rank=rank, guard=guard)
+        if ev.empty:
+            continue
+        t = ev[ev.grp == "top"]
+        row = {"top": top, "picks": int(len(t)), "months": int(t.i.nunique()), "all": _late_stats(t),
+               "r12": _late_buckets(t, "r12", LATE_R12)}
+        if rank == "mom":
+            row["plan"] = _late_stats(t[t.buy])
+            row["streak"] = [{"lo": lo, "hi": hi, **_late_stats(t[(t.streak >= lo) & (t.streak <= (hi or 10 ** 6))])}
+                             for lo, hi in LATE_STREAK if ((t.streak >= lo) & (t.streak <= (hi or 10 ** 6))).sum() >= 15]
+            row["thirds"] = {"r12": _thirds(ev, "r12"), "streak": _thirds(ev, "streak")}
+        else:
+            row["trend"] = {"rising": _late_stats(t[t.trend == 1]), "resting": _late_stats(t[t.trend == 0])}
+            row["hi"] = _late_buckets(t, "hi", LATE_HI)
+        out[key] = row
+    # the same rules, but skipping "late" buys (simulated day by day, before tax)
+    cagr = lambda v: _r(100 * study.summary(ctx, study.simulate(ctx, v)[0])["cagr"], 1)
+    champ = study.Variant("Champions while rising", universe="n200", rank="quality", trend=True,
+                          hold_rule="quality", guard="none")
+    out["rules"] = {"skip_doubled": cagr(method("Skip shares up 100%+ in a year", max_r12=1.0)),
+                    "skip_long_leaders": cagr(method("Skip shares among the strongest 12+ months",
+                                                     max_streak=12)),
+                    "champ": cagr(champ), "champ_strict": cagr(dataclasses.replace(champ, universe="top100"))}
+    return out
+
+
+def top_months(f: Features, universe: set[str], top: int = config.LT_KEEP_TOP, limit: int = 60) -> dict[str, int]:
+    """For each share: at how many month-end reviews in a row (counting back from the latest one) it ranked among
+    the `top` strongest, i.e. how long it has already been a leader. 0 = not among them at the latest review."""
+    dates = f.close.index
+    ri = review_index(dates)
+    if ri < 0:
+        return {}
+    me = [i for i in range(len(dates) - 1) if dates[i].month != dates[i + 1].month and i <= ri]
+    if ri == len(dates) - 1:
+        me.append(ri)
+    out: dict[str, int] = {}
+    alive: set[str] | None = None
+    for i in reversed(me[-limit:]):
+        tops = set(ranking(f, universe, at=i)[:top])
+        alive = tops if alive is None else alive & tops
+        if not alive:
+            break
+        for s in alive:
+            out[s] = out.get(s, 0) + 1
+    return out
+
+
 def publish_long_test(p, uni: pd.DataFrame, n50: set[str]) -> dict:
     """Write longtest.json (the Results screen and the short-trade safety gate read it)."""
     from datetime import datetime, timezone
-    out = {"generated": datetime.now(timezone.utc).isoformat(), **long_test(p, uni, n50)}
+    from . import study
+    ctx = study.Ctx(p, None, uni, n50)
+    out = {"generated": datetime.now(timezone.utc).isoformat(), **long_test(p, uni, n50, ctx=ctx)}
+    try:
+        if out.get("rows"):
+            out["late"] = late_table(ctx)
+            out["late"]["rules"]["plan"] = out["rows"]["plan"]["cagr"]
+            out["late"]["rules"]["index"] = out["rows"]["index"]["cagr"]
+    except Exception as exc:                # the evidence table must never cost the 18-year test
+        log.warning("too-late table failed: %s", exc)
     try:
         out["short_term"] = short_test(p, n50)
     except Exception as exc:

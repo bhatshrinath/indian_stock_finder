@@ -28,7 +28,7 @@ from . import config, data, fundamentals, news
 
 log = logging.getLogger(__name__)
 
-VERSION = 3                    # bump when the study changes, so the weekly file is rebuilt at once
+VERSION = 4                    # bump when the study changes, so the weekly file is rebuilt at once
 FILE = "champions.json"
 REFRESH_DAYS = 6               # the study changes slowly: rebuilt about once a week
 CRASH_MIN_FALL = 0.15          # a "crash" = the Nifty fell at least 15% from its high

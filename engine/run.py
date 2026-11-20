@@ -537,6 +537,14 @@ def run_full(args) -> None:
     review_day = str(f.close.index[ri].date()) if ri >= 0 else None
     keep = longterm.ranking(f, n50, at=ri)[: config.LT_KEEP_TOP] if ri >= 0 else []
     lt_safe = long_term_buy_list(f, uni, order, use_fundamentals=not args.demo)
+    # how long each suggested share has already been among the 9 strongest (the "is it too late?" question)
+    try:
+        tm = longterm.top_months(f, n50)
+    except Exception as exc:                          # a fact for the cards: never worth losing the plan for
+        log.warning("months among the strongest failed: %s", exc)
+        tm = {}
+    for x in lt_safe:
+        x["top_months"] = tm.get(x["symbol"], 0)
     # mid-size companies are not part of the tested method (more risk, and the monthly review is Nifty 50)
     mid_safe: list[dict] = []
     funds = fund_info(args.demo)
@@ -632,6 +640,8 @@ def run_full(args) -> None:
         "mid_safe": [x for x in mid_safe if not x.get("red_flags")],
         "funds": funds,
         "expect": {"holding": outcomes, "cost_pct": round(config.ROUND_TRIP_COST * 100, 2)},
+        # "is it too late to buy after a rise?": the weekly 18-year evidence (longtest.json), for every card
+        "late": longterm.load_long_test().get("late") or {},
         "safe": {
             "enabled": config.SAFE_MODE, "trade_amount": config.TRADE_AMOUNT,
             "max_open_trades": config.MAX_OPEN_TRADES, "universe": "Nifty 50",

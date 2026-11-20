@@ -762,26 +762,32 @@ def late_buckets(ev: pd.DataFrame, title: str, keys: tuple[str, ...], head: bool
     return rows
 
 
+def thirds_diff(ev: pd.DataFrame, key: str, h: int = 252) -> np.ndarray:
+    """For each month end: the lead over the Nifty fund of the third of the top picks that had run furthest by
+    `key`, minus that of the third that had run least (one number per month end)."""
+    top = ev[ev.grp == "top"]
+    diffs = []
+    for _, g in top.groupby("i"):
+        g = g.dropna(subset=[key, f"x{h}"])
+        n3 = len(g) // 3
+        if n3 < 2:
+            continue
+        g = g.sort_values(key, kind="stable")
+        diffs.append(g[f"x{h}"].iloc[-n3:].mean() - g[f"x{h}"].iloc[:n3].mean())
+    return np.asarray(diffs, dtype=float)
+
+
 def late_thirds(ev: pd.DataFrame, title: str,
                 keys: tuple[str, ...] = ("r12", "ext", "streak", "r36", "pre", "r1")) -> list[str]:
     """Within each month's top picks: the third that had run furthest minus the third that had run least
     (lead over the Nifty fund). Windows overlap, so the t value is divided by sqrt(months in the window)."""
-    top = ev[ev.grp == "top"]
     rows = [f"{title}: furthest-run third minus least-run third of each month's top picks (lead over the Nifty fund)"]
     for key, name, _ in LATE_FEATURES:
         if key not in keys:
             continue
         parts = []
         for h, mo in ((126, 6), (252, 12)):
-            diffs = []
-            for _, g in top.groupby("i"):
-                g = g.dropna(subset=[key, f"x{h}"])
-                n3 = len(g) // 3
-                if n3 < 2:
-                    continue
-                g = g.sort_values(key, kind="stable")
-                diffs.append(g[f"x{h}"].iloc[-n3:].mean() - g[f"x{h}"].iloc[:n3].mean())
-            d = np.asarray(diffs)
+            d = thirds_diff(ev, key, h)
             if len(d) < 12:
                 parts.append(f"{mo}m -")
                 continue

@@ -32,6 +32,34 @@ collapsed are missing. Without that hindsight the shares added much less, so **m
 fund and the market guard**. "After tax" assumes 20% on gains from anything sold within a year, and that a small
 investor's long-term gains stay under the yearly tax-free limit.
 
+### "Isn't it too late? The share has already gone up." (checked on 18 years)
+The app buys shares that are already rising, so a fair worry is that the chance has gone. `engine/study.py` (rounds 4 and 5,
+Nov 2026) checked it using only the prices known at each moment: what the method's picks (Nifty 50, top 9, while the guard
+allowed buying) did over the next year, by how much they had already risen.
+
+| Rise in the 12 months before the pick | Beat the index fund over the next year | Typical gain | Bad case (1 in 10) | Hit the 25% safety price within 6 months |
+|---|---|---|---|---|
+| under 20% | 55% | +23% | −20% | 17% |
+| 20–40% | 58% | +16% | −16% | 19% |
+| 40–70% | 62% | +20% | −16% | 20% |
+| 70–100% | 64% | +23% | −21% | 21% |
+| 100% or more | 68% | +22% | −22% | 36% |
+
+* **No sign of "too late".** Within each month's picks, the third that had risen most beat the third that had risen least
+  in 74% of months. The same held for the 100 most traded shares of each time (no hindsight) and for the Nifty 200 list.
+  How long a share had already been among the strongest (months in a row) made no real difference.
+* **Every rule that skipped "late" buys earned less** over 18 years than the plan as it is (21.8% a year): skipping shares up
+  100%+ in a year 20.4%, up 60%+ 15.4%, more than 25% above the 200-day average 18.9%, on top for over a year 20.8%.
+* **The catch:** big risers swing more (36% of those that had doubled hit the safety price within 6 months, against 24% of
+  all picks). That is what the 25% safety price is for.
+* **Long-term champions** (Advanced) gave the same answer: those that had risen most did as well or better, and the app's
+  "buy only while rising" advice helped (rising ones beat the index fund 57% of the time over the next year, resting ones
+  49%, those more than 25% below their 1-year high only 38%). Honest note: chosen without hindsight from the 100 most
+  traded shares of each time, champion-like shares earned 9.6% a year, below the index fund's 12.1%.
+
+Each long-term card shows this for its own share ("Up 24% in a year. Too late to buy? …"), with the table under
+*Details* and the whole check under **Advanced → Results so far**, rebuilt weekly from the latest prices (`longterm.late_table`).
+
 ### Safe mode (on by default)
 | Rule | Why |
 |---|---|
@@ -46,7 +74,8 @@ The share counts in phone messages use `TRADE_AMOUNT` (default ₹20,000; set th
 
 ### What every suggestion shows
 Stock, how many shares, the most to pay, the sell-if-it-falls price, **how long to hold**, and **what to expect**: a bad case, a typical case
-and a good case in rupees (with the sell price), taken from similar past cases after charges, plus exact steps to place the order
+and a good case in rupees (with the sell price), taken from similar past cases after charges, **how much the share has already
+risen and how often shares picked after a similar rise beat the index fund** (the "too late to buy?" check above), plus exact steps to place the order
 (NSE, Delivery, Limit order, then a stop-loss/GTT sell order). Shares also get a safety price that **rises as the price rises**
 (25% below the highest price since buying), so gains are protected; the index fund has none and is sold only by the market guard. A tighter 12% rule was tested on real data and rejected: it sold winners on ordinary dips (typical result +0.6% against +4.8% for the 25% rule, with no better worst case). Suggestions are valid for 3 trading days and are re-checked every weekday evening.
 
@@ -254,8 +283,9 @@ engine/            Python engine (runs in GitHub Actions)
   strategies.py    market regime, swing setups, momentum scoring
   backtest.py      trade-by-trade swing backtest + monthly portfolio backtest
   longterm.py      My Plan's long-term rules: ranking, month-end review, market guard, "if you own it" sells,
-                   the Results-screen backtest and the weekly 18-year test (docs/data/longtest.json)
-  study.py         18-year strategy study on real prices, point-in-time (Tests workflow, commit message with [study])
+                   the Results-screen backtest, the weekly 18-year test and the "too late to buy?" table (docs/data/longtest.json)
+  study.py         18-year strategy study on real prices, point-in-time (Tests workflow, commit message with [study];
+                   --part late / champ / rules picks the round)
   tracker.py       live track record of every recommendation
   news.py          RSS news, sentiment, red flags
   fundamentals.py  quality filter (ROE, debt, losses, P/E)

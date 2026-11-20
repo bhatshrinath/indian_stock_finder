@@ -228,6 +228,11 @@ async function loadAll() {
   renderAll();
   checkAlerts();
   if (CUR !== "advanced") scrollToPending(true);
+  // the "too late to buy?" evidence normally comes inside latest.json; until the next scan copies it there, read it
+  // from the weekly 18-year file (in the background, so the plan shows at once)
+  if (!S.latest?.late?.n50 && !S.longtest) {
+    getJSON("longtest.json").then((t) => { S.longtest = t; if (t?.late?.n50) renderAll(); }).catch(() => { S.longtest = {}; });
+  }
 }
 
 async function refreshLive() {
@@ -823,6 +828,7 @@ function openLtInfo(sym) {
     </div>
     ${p.ai_note ? `<div class="callout info small">🤖 ${esc(p.ai_note)}</div>` : ""}
     ${(p.warnings || []).length ? `<div class="callout warn small">${p.warnings.map(esc).join(" · ")}</div>` : ""}
+    ${lateLine({ ...p, isFund: false }, "n200")}
     ${(p.news || []).length ? `<h3 style="margin-top:12px">News</h3><ul class="news">${p.news.map(newsItem).join("")}</ul>` : ""}
     <div class="btns"><button class="btn small" data-buy="${esc(p.symbol)}|lt">I bought this</button></div>`;
   $("#dlg").showModal();
@@ -903,6 +909,7 @@ function renderRecord() {
       : simple ? `<p>Tested on the past 5 years of prices:</p><ul class="rules">${simple}</ul>` : ""}
     <p class="small muted">No method wins every time. The goal is small losses and bigger or more frequent wins.</p></div>
     ${longTestCard()}
+    ${lateCard()}
     <h2>Live track record</h2>
     <div class="card"><p class="small muted">Every BUY idea is recorded the day it's published and followed to its real exit. No hindsight, no editing.${t.since ? " Tracking since " + esc(fmtDate(t.since)) + "." : ""}</p>
     <div class="kv"><div><span>Closed trades</span><b>${t.closed || 0}</b></div><div><span>Win rate</span><b>${pct(t.win_rate, 0, false)}</b></div>
@@ -1641,6 +1648,8 @@ function basket() {
       hist: x._swing ? { p10: x.hist_p10, median: x.hist_median, p75: x.hist_p75, p90: x.hist_p90,
         days: x.hist_days_median, daysMax: x.hist_days_p90, win: x.hist_win_rate, n: x.hist_trades } : null,
       news: x.news || (L.swing || []).find((y) => y.symbol === x.symbol)?.news || [],
+      // how far and how long it has already risen (the "is it too late to buy?" line)
+      ret_12m: x._swing ? null : (x.ret_12m ?? x.trend?.ret_12m ?? null), top_months: x._swing ? null : (x.top_months ?? null),
     };
   });
   // whole shares leave money unused: add extra shares where they fit,
@@ -1700,7 +1709,7 @@ function protectedSuggestions() {
       stop: p.review_below, horizon: "Long term · 6 to 12 months",
       sellRule: `Hold for months. Sell if it falls below ${px(p.review_below)}, or when the app says at the monthly check.`,
       why: "A strong, steadily rising company among India's 50 biggest. Ranked by 6 and 12-month strength.",
-      odds: null, news: p.news || [] });
+      odds: null, news: p.news || [], ret_12m: p.ret_12m ?? p.trend?.ret_12m ?? null, top_months: p.top_months ?? null });
   }
   return out.filter((x) => x.max_entry <= x.amount);
 }
@@ -1817,6 +1826,102 @@ function holdLine(x) {
     : "Hold while it stays among the strongest (checked at each month end). Kept a year or more, the profit is taxed less.";
 }
 
+// ---------------------------------------------------------------- "is it too late to buy after a rise?"
+// The weekly 18-year evidence (engine/longterm.py late_table, copied into latest.json): what the app's kind of pick
+// did over the next year, split by how much it had already risen. Shares that had risen most did not do worse (they
+// only swung more), how long a share had been among the strongest made no real difference, and rules that skipped
+// such buys earned less. So the app keeps its picks and shows the evidence on each card.
+const lateData = () => (S.latest?.late?.n50 ? S.latest.late : S.longtest?.late?.n50 ? S.longtest.late : null);
+const lateBucket = (rows, v) => (v == null || isNaN(v) ? null
+  : (rows || []).find((b) => (b.lo == null || v >= b.lo) && (b.hi == null || v < b.hi)) || null);
+const riseRange = (b) => (b.lo == null ? `under ${b.hi}%` : b.hi == null ? `${b.lo}% or more` : `${b.lo}–${b.hi}%`);
+const inTen = (p) => `${Math.round((p ?? 0) / 10)} times in 10`;
+const lateYears = () => Math.round(lateData()?.years || 18);
+const riseText = (v) => (v >= 0 ? `Up ${pct(v, 0, false)} in a year` : `Down ${pct(-v, 0, false)} in a year`);
+
+// one line on a long-term card: how much it has risen, and what history says about buying after such a rise
+function lateLine(x, uni = "n50") {
+  const D = lateData(), T = D?.[uni];
+  if (!T || x.isFund || x.kind !== "long_term" || x.ret_12m == null) return "";
+  const b = lateBucket(T.r12, x.ret_12m);
+  if (!b || b.beat12 == null) return "";
+  const swings = b.stop6 != null && T.all?.stop6 != null && b.stop6 >= T.all.stop6 + 8
+    ? ` Such shares swing more: ${Math.round(b.stop6 / 10)} in 10 fell to the safety price within 6 months.` : "";
+  return `<div class="small" style="margin-top:6px">📈 <b>${riseText(x.ret_12m)}. Too late to buy?</b>
+    ${b.beat12 >= 55 ? "Usually not: in" : "In"} ${lateYears()} years of prices, shares picked like this after rising ${riseRange(b)}
+    beat the index fund <b>${inTen(b.beat12)}</b> over the next year (typical gain ${pct(b.med12, 0)}).${swings}</div>`;
+}
+
+const lateRows = (T, mark, stops = false) => (T.r12 || []).filter((r) => r.beat12 != null).map((r) => `<tr${r === mark ? ' class="hl"' : ""}>
+    <td>${riseRange(r)}${r === mark ? " <b>◀ this one</b>" : ""}</td><td>${r.beat12}%</td>
+    <td class="${tone(r.med12)}">${pct(r.med12, 0)}</td><td class="down">${pct(r.bad12, 0)}</td>
+    ${stops ? `<td>${r.stop6 != null ? `${r.stop6}%` : "–"}</td>` : ""}</tr>`).join("");
+
+// the same evidence as a small table in the card's details, with this share's row marked
+function lateBlock(x) {
+  const D = lateData(), T = D?.n50;
+  if (!T || x.isFund || x.kind !== "long_term") return "";
+  const b = lateBucket(T.r12, x.ret_12m);
+  const st = T.streak || [];
+  const first = st[0], old = st.length > 1 ? st[st.length - 1] : null;
+  const m = x.top_months, R = D.rules || {};
+  const since = m == null ? "" : m > 1 ? `It has been among the 9 strongest at the last <b>${m}</b> month-end reviews in a row. `
+    : m === 1 ? "It was among the 9 strongest at the last month-end review. " : "It joined the 9 strongest after the last month-end review. ";
+  const howLong = first?.beat12 != null && old?.beat12 != null
+    ? `How long a share had already been on top made little difference: new ones beat the index fund ${inTen(first.beat12)}, those on top for a year or more ${inTen(old.beat12)}.` : "";
+  return `<div class="line"><span class="ic">⏳</span><div><b>Is it too late to buy after a rise?</b> What shares picked like this did over the next year,
+    by how much they had already risen (${lateYears()} years of prices, held a year, before tax):
+    <div class="table-wrap"><table class="expect-table late-table"><thead><tr><th>Rise in the year before</th><th>Beat the index fund</th><th>Typical</th><th>Bad case</th></tr></thead>
+      <tbody>${lateRows(T, b)}</tbody></table></div>
+    <div class="small">${since}${howLong}</div>
+    ${R.skip_doubled != null && R.plan != null ? `<div class="small muted">In the same test, skipping shares that had already doubled in a year earned ${pct(R.skip_doubled, 1, false)} a year instead of ${pct(R.plan, 1, false)}.</div>` : ""}</div></div>`;
+}
+
+// Advanced -> Results so far: the whole check in one card
+function lateCard() {
+  const D = lateData(), T = D?.n50;
+  if (!T) return "";
+  const R = D.rules || {}, C = D.champ;
+  const big = (T.r12 || []).find((r) => r.hi == null);
+  const th = T.thirds?.r12;
+  const rise = C?.trend?.rising, rest = C?.trend?.resting;
+  return `<h2>Too late to buy shares that already rose?</h2><div class="card">
+    <p class="small">A fair worry: the app suggests shares that have already gone up, so the chance may be gone. We checked on ${lateYears()} years of real prices,
+      using only the prices known at each moment: what the shares My Plan's method picked did over the next year, by how much they had already risen.</p>
+    <div class="table-wrap"><table class="expect-table late-table"><thead><tr><th>Rise in the year before</th><th>Beat the index fund</th><th>Typical</th><th>Bad case</th><th>Hit the safety price (6 months)</th></tr></thead>
+      <tbody>${lateRows(T, null, true)}</tbody></table></div>
+    <p class="small">✅ <b>No sign of "too late".</b> ${th ? `Among each month's picks, the ones that had risen most did better over the next year in ${th.better_pct}% of months. ` : ""}How long a share had already been among the strongest made no real difference.
+      ${big?.stop6 != null && T.all?.stop6 != null ? `The catch: shares that had doubled swing more (${big.stop6}% hit the 25% safety price within 6 months, against ${T.all.stop6}% of all picks). That is what the safety price is for.` : ""}</p>
+    ${R.plan != null && R.skip_doubled != null ? `<p class="small">🧪 <b>Rules that skip such shares</b>, tested day by day: skipping shares that had doubled in a year earned <b>${pct(R.skip_doubled, 1, false)}</b> a year${R.skip_long_leaders != null ? `, skipping shares on top for over a year <b>${pct(R.skip_long_leaders, 1, false)}</b>` : ""}; My Plan's method as it is earned <b>${pct(R.plan, 1, false)}</b>. So the app keeps buying the strongest.</p>` : ""}
+    ${rise?.beat12 != null && rest?.beat12 != null ? `<p class="small">🏆 <b>Long-term champions</b> (Advanced): the same held. Those that had risen most did as well or better, and buying only while the price is rising helped: rising ones beat the index fund ${inTen(rise.beat12)} over the next year, resting ones ${inTen(rest.beat12)}.${R.champ_strict != null && R.index != null ? ` Picked without hindsight (from the 100 most traded shares of each time), champion-like shares earned ${pct(R.champ_strict, 1, false)} a year, against ${pct(R.index, 1, false)} for the index fund.` : ""}</p>` : ""}
+    <p class="small muted">The table: held a year without selling, before tax, today's Nifty 50 companies (so a little optimistic). Past results, not a promise.</p></div>`;
+}
+
+// a champion's detail: the same question for champion-like shares
+function champLateLine(s) {
+  const C = lateData()?.champ;
+  if (!C) return "";
+  const ser = s.series || [];
+  const r12 = ser.length > 12 && ser[ser.length - 13] > 0 ? 100 * (ser[ser.length - 1] / ser[ser.length - 13] - 1) : null;
+  const b = lateBucket(C.r12, r12);
+  const far = s.from_high != null && s.from_high <= -25 ? (C.hi || []).find((h) => h.lo == null) : null;
+  const out = [];
+  if (b?.beat12 != null) out.push(`📈 <b>${riseText(r12)}. Too late?</b> Champion-like shares that had risen ${riseRange(b)} in a year beat the index fund
+    ${inTen(b.beat12)} over the next year (typical ${pct(b.med12, 0)}), in ${lateYears()} years of prices.`);
+  if (far?.beat12 != null) out.push(`⚠ Shares this far below their 1-year high did worst: only ${inTen(far.beat12)} beat the index fund over the next year.`);
+  return out.length ? `<div class="small" style="margin-top:8px">${out.join("<br>")}</div>` : "";
+}
+
+// Advanced -> Does this idea work?: the stricter, no-hindsight result for champions
+function champStrictNote() {
+  const R = lateData()?.rules;
+  if (!R || R.champ_strict == null || R.index == null) return "";
+  return `<div class="card small">🔍 <b>A stricter test, without hindsight:</b> champions chosen every month from the 100 most traded shares of that time
+    (3 at a time, next to the index fund, sold at the 25% safety price) earned <b>${pct(R.champ_strict, 1, false)}</b> a year over ${lateYears()} years,
+    while the index fund alone earned <b>${pct(R.index, 1, false)}</b>. Champions are good to learn from, but not a sure way to beat the market.
+    My Plan uses the index fund plus the strongest shares instead.</div>`;
+}
+
 function orderDetails(x, qty) {
   const L = S.latest || {};
   const total = qty * x.max_entry;
@@ -1829,6 +1934,7 @@ function orderDetails(x, qty) {
     : x.kind === "long_term" ? `<div class="line"><span class="ic">🛡</span><div><b>No safety price for the index fund.</b> It is sold only if the whole market turns down: the Nifty closing 3% below its 200-day average${g.sell_below ? ` (about ${num(g.sell_below, 0)} now)` : ""}. The app will tell you.</div></div>` : "";
   return `<details id="od-${esc(x.kind)}-${esc(x.symbol)}"><summary>Details: what to expect, how to order</summary>
     ${expectBlock(x, qty)}
+    ${lateBlock(x)}
     <div class="line"><span class="ic">📅</span><div>Suggested on <b>${esc(fmtDate(L.data_date))}</b>. Valid for 3 trading days${valid ? ` (until <b>${esc(fmtDate(valid))}</b>)` : ""}. After that, use the newer list.</div></div>
     <div class="line"><span class="ic">🧾</span><div><b>How to place it in your broker app:</b>
       <ol class="small steps"><li>Search <b>${esc(x.symbol)}</b> (NSE).</li>
@@ -1870,6 +1976,7 @@ function suggestionCard(x) {
       ? `Sell if it falls to <b>${px(x.stop)}</b>${x.kind === "long_term" ? " (rises as the price rises)" : ""}.`
       : "Sell only if the whole market turns down: the app will tell you."}</div>` : ""}
     ${x.checks ? `<div class="small up" style="margin-top:6px">${esc(x.checks)}</div>` : ""}
+    ${qty ? lateLine(x) : ""}
     ${qty ? liveVsLimit(x) : ""}
     ${qty ? `<div class="small" style="margin-top:6px">⏱ ${esc(holdLine(x))}</div>` : ""}
     ${expectLine(x, qty)}
@@ -2311,6 +2418,7 @@ function openChampion(sym) {
       <div><span>Dividend</span><b>${s.business?.dividend ? "Pays" : "–"}</b></div>
     </div>
     ${s.trend === "rising" ? "" : `<div class="callout warn small">🟡 Resting: the price is below its 200-day average. Wait until it is rising again before buying.</div>`}
+    ${champLateLine(s)}
     ${(s.news || []).length ? `<h4>📰 News</h4><ul class="news">${s.news.map(newsItem).join("")}</ul>` : ""}
     <p class="small muted">Past results are not a promise. ${f.market_cap ? `Company size: ₹${f.market_cap >= 1e5 ? `${num(f.market_cap / 1e5, 1)} lakh crore` : `${num(f.market_cap, 0)} crore`}.` : ""}</p>`;
   $("#dlg").showModal();
@@ -2467,6 +2575,7 @@ function renderRuleTest() {
   if (!el || !champGate(el)) return;
   const T = (champData().test || []).filter((t) => t.champ?.x && t.nifty?.x);
   if (!T.length) { el.innerHTML = `<h2>🧪 Does this idea work?</h2><div class="card empty">Not enough history for the test yet.</div>`; return; }
+  S.ruleNote = !!lateData()?.rules;           // drawn with the no-hindsight note? (renderAll adds it once it arrives)
   const beatN = T.filter((t) => t.champ.cagr > t.nifty.cagr).length;
   const beatA = T.filter((t) => t.all?.cagr != null && t.champ.cagr > t.all.cagr).length;
   const nc = T.filter((t) => t.next_crash && t.next_crash.champ_months != null);
@@ -2496,7 +2605,8 @@ function renderRuleTest() {
         ${n && n.champ_months != null ? `<div class="small">⚡ Next crash (${esc(n.short)}): champions back in <b>${moShort(n.champ_months)}</b>, Nifty <b>${n.nifty_recovered ? moShort(n.nifty_months) : "not back yet"}</b></div>` : ""}
         <details class="small"><summary>Which shares?</summary>${t.picks.map(esc).join(", ")}${t.n_champions < t.picks.length ? ` <span class="muted">(only ${t.n_champions} passed every check then; the rest were the next best)</span>` : ""}</details></div>`;
     }).join("")}
-    <div class="card small muted">"All shares" = the same amount in every share of today's Nifty 200 list. It has the same small bias as the champions (companies that failed are missing), so it is the fair comparison. Before charges and tax.</div>`;
+    <div class="card small muted">"All shares" = the same amount in every share of today's Nifty 200 list. It has the same small bias as the champions (companies that failed are missing), so it is the fair comparison. Before charges and tax.</div>
+    ${champStrictNote()}`;
 }
 
 // ------------------------------------------------------------------ wiring
@@ -2534,6 +2644,7 @@ function renderAll() {
   $("#disclaimer").textContent = S.latest?.disclaimer || "";
   // champions screen: only redrawn when the market mood changes (keeps open sections open)
   if (S.champ && S.champRegime !== S.latest?.market?.regime) renderChampions();
+  if (S.champ && S.ruleNote === false && lateData()?.rules) renderRuleTest();
 }
 
 function showTab(name, goingBack = false) {
